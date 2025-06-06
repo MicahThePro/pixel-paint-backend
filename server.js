@@ -402,14 +402,15 @@ io.on('connection', (socket) => {
     });
 
     // Handle cursor movement
+    // Handle cursor movement
     socket.on('cursorMove', (data) => {
         const player = players.get(socket.id);
         if (!player) return;
         
         // Broadcast cursor position to all other players
         socket.broadcast.emit('cursorUpdate', {
-            x: data.x,
-            y: data.y,
+            canvasX: data.canvasX,
+            canvasY: data.canvasY,
             gridX: data.gridX,
             gridY: data.gridY,
             playerName: player.name,
