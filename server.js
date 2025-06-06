@@ -123,6 +123,7 @@ io.on('connection', (socket) => {
         if (!player) return;
 
         gameBoard[y][x] = color;
+        pixelOwners[y][x] = player.name; // Track who drew this pixel
         updateScore(player.name, 1);
         io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
@@ -139,6 +140,19 @@ io.on('connection', (socket) => {
                 }
             }
         }
+        updateScores();
+    });
+
+    // Clear entire canvas (admin/general clear)
+    socket.on('clearCanvas', () => {
+        for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                gameBoard[y][x] = '';
+                pixelOwners[y][x] = ''; // Also clear pixel ownership
+            }
+        }
+        // Send the cleared board to all clients
+        io.emit('fullBoard', gameBoard);
         updateScores();
     });
 
@@ -217,12 +231,25 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         const player = players.get(socket.id);
         if (player) {
+            // Clear all pixels drawn by this player
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    if (pixelOwners[y][x] === player.name) {
+                        gameBoard[y][x] = '';
+                        pixelOwners[y][x] = '';
+                        // Notify all clients about the cleared pixel
+                        io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
+                    }
+                }
+            }
+            
             players.delete(socket.id);
             scores.delete(player.name);
             updateScores();
             io.emit('playerListUpdate', Array.from(players.values()));
+            
+            console.log(`User ${player.name} disconnected - their drawings have been cleared`);
         }
-        console.log('User disconnected');
     });
 });
 
