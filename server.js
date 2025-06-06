@@ -10,6 +10,15 @@ const io = require('socket.io')(http, {
 const path = require('path');
 const fs = require('fs');
 
+// Import Achievement System
+const AchievementSystemBackend = require('./achievementSystem');
+const achievementSystem = new AchievementSystemBackend();
+
+// Save achievement data every 5 minutes
+setInterval(() => {
+    achievementSystem.savePlayerData();
+}, 5 * 60 * 1000);
+
 // Create necessary directories
 const reportsDir = path.join(__dirname, 'reports');
 const bansDir = path.join(__dirname, 'bans');
@@ -359,6 +368,23 @@ io.on('connection', (socket) => {
         updateScores();
         io.emit('playerListUpdate', Array.from(players.values()));
         
+        // Track achievement for joining game
+        achievementSystem.trackSocialEvent(socket.id, 'game_joined');
+        
+        // Track achievement for meeting other players
+        players.forEach((player, playerId) => {
+            if (playerId !== socket.id) {
+                achievementSystem.trackSocialEvent(socket.id, 'player_met', { playerName: player.name });
+                achievementSystem.trackSocialEvent(playerId, 'player_met', { playerName: name });
+            }
+        });
+        
+        // Check for new achievements and send them to the player
+        const newAchievements = achievementSystem.checkAchievements(socket.id);
+        if (newAchievements.length > 0) {
+            socket.emit('newAchievements', newAchievements);
+        }
+        
         // Notify all players that someone joined
         io.emit('playerJoined', { playerName: name });
     });
@@ -373,6 +399,23 @@ io.on('connection', (socket) => {
         updateScores();
     });
 
+    // Achievement system handlers
+    socket.on('requestAchievements', () => {
+        const achievements = achievementSystem.getPlayerAchievements(socket.id);
+        const stats = achievementSystem.getPlayerStats(socket.id);
+        socket.emit('achievementsData', { achievements, stats });
+    });
+
+    // Handle achievement notifications from the achievement system
+    achievementSystem.on('achievementUnlocked', (data) => {
+        if (data.playerId) {
+            io.to(data.playerId).emit('achievementUnlocked', {
+                achievement: data.achievement,
+                stats: data.stats
+            });
+        }
+    });
+
     socket.on('paint', (data) => {
         const { x, y, color } = data;
         const player = players.get(socket.id);
@@ -385,6 +428,9 @@ io.on('connection', (socket) => {
         // Update the pixel
         gameBoard[y][x] = color;
         pixelOwners[y][x] = player.name;
+        
+        // Track achievement for pixel painting
+        achievementSystem.trackPixelPainted(socket.id, x, y, color);
         
         // Handle scoring based on pixel ownership
         if (!previousOwner || previousOwner === '') {
@@ -541,6 +587,9 @@ io.on('connection', (socket) => {
             submitted: false
         });
 
+        // Track achievement for joining challenge
+        achievementSystem.trackChallengeEvent(socket.id, 'joined');
+
         socket.emit('challengeJoined', { 
             phase: challengeMode.phase,
             word: challengeMode.phase === 'drawing' ? challengeMode.currentWord : null,
@@ -609,6 +658,9 @@ io.on('connection', (socket) => {
         challengePlayer.submitted = true;
         challengeMode.submissions.set(socket.id, challengePlayer.canvas);
         
+        // Track achievement for submitting drawing
+        achievementSystem.trackChallengeEvent(socket.id, 'submitted');
+        
         socket.emit('drawingSubmitted');
         
         // Check if all players have submitted
@@ -627,6 +679,9 @@ io.on('connection', (socket) => {
         if (targetPlayerId === socket.id) return;
         
         challengeMode.votes.set(socket.id, { targetId: targetPlayerId, rating });
+        
+        // Track achievement for voting
+        achievementSystem.trackChallengeEvent(socket.id, 'voted');
         
         // Check if all players have voted
         const allVoted = challengeMode.players.size <= challengeMode.votes.size;
@@ -660,6 +715,9 @@ io.on('connection', (socket) => {
             scores.delete(player.name);
             updateScores();
             io.emit('playerListUpdate', Array.from(players.values()));
+            
+            // Save achievement data when player disconnects
+            achievementSystem.savePlayerData();
             
             console.log(`User ${player.name} disconnected - their drawings have been cleared`);
         }
@@ -792,6 +850,14 @@ function showResults() {
     // Sort by average rating (highest first)
     challengeMode.results.sort((a, b) => b.averageRating - a.averageRating);
 
+    // Track achievement for challenge winner (if there are results and a clear winner)
+    if (challengeMode.results.length > 0) {
+        const winner = challengeMode.results[0];
+        if (winner.voteCount > 0) { // Only count as winner if they received votes
+            achievementSystem.trackChallengeEvent(winner.playerId, 'won');
+        }
+    }
+
     // Notify all players of results
     io.to(Array.from(challengeMode.players.keys())).emit('challengeResults', {
         word: challengeMode.currentWord,
@@ -864,6 +930,21 @@ function updateScore(playerName, points) {
         if (playerScore.score < 0) {
             playerScore.score = 0;
         }
+        
+        // Find player socket ID for achievement tracking
+        let playerId = null;
+        for (let [socketId, player] of players) {
+            if (player.name === playerName) {
+                playerId = socketId;
+                break;
+            }
+        }
+        
+        // Track achievement for score milestones
+        if (playerId) {
+            achievementSystem.updatePlayerScore(playerId, playerScore.score);
+        }
+        
         updateScores();
     }
 }
