@@ -358,6 +358,9 @@ io.on('connection', (socket) => {
         socket.emit('fullBoard', gameBoard);
         updateScores();
         io.emit('playerListUpdate', Array.from(players.values()));
+        
+        // Notify all players that someone joined
+        io.emit('playerJoined', { playerName: name });
     });
 
     // Allow viewing the board without joining
@@ -521,6 +524,15 @@ io.on('connection', (socket) => {
         const player = players.get(socket.id);
         if (!player) return;
 
+        // Prevent joining during active rounds (drawing, voting, or results phases)
+        if (challengeMode.active && challengeMode.phase !== 'waiting') {
+            socket.emit('challengeJoinBlocked', { 
+                message: 'Cannot join during an active round. Please wait for the next round to start.',
+                phase: challengeMode.phase 
+            });
+            return;
+        }
+
         // Add player to challenge mode
         challengeMode.players.set(socket.id, {
             name: player.name,
@@ -542,6 +554,27 @@ io.on('connection', (socket) => {
 
         // Send updated challenge lobby
         broadcastChallengeLobby();
+    });
+
+    socket.on('requestChallengeStatus', () => {
+        // Send current challenge status to requesting player (even if they're not in challenge mode)
+        const lobbyData = {
+            playerCount: challengeMode.players.size,
+            phase: challengeMode.phase,
+            active: challengeMode.active,
+            players: Array.from(challengeMode.players.values()).map(p => ({
+                name: p.name,
+                color: p.color,
+                submitted: p.submitted
+            }))
+        };
+
+        if (challengeMode.phase === 'drawing') {
+            lobbyData.word = challengeMode.currentWord;
+            lobbyData.timeLeft = getRemainingTime();
+        }
+
+        socket.emit('challengeLobbyUpdate', lobbyData);
     });
 
     socket.on('leaveChallenge', () => {
@@ -607,6 +640,9 @@ io.on('connection', (socket) => {
         if (player) {
             // Notify other players that this player disconnected (for cursor cleanup)
             socket.broadcast.emit('playerDisconnected', { playerName: player.name });
+            
+            // Notify all players that someone left
+            io.emit('playerLeft', { playerName: player.name });
             
             // Clear all pixels drawn by this player
             for (let y = 0; y < GRID_SIZE; y++) {
