@@ -147,6 +147,22 @@ io.on('connection', (socket) => {
         io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
 
+    // Handle cursor movement
+    socket.on('cursorMove', (data) => {
+        const player = players.get(socket.id);
+        if (!player) return;
+        
+        // Broadcast cursor position to all other players
+        socket.broadcast.emit('cursorUpdate', {
+            x: data.x,
+            y: data.y,
+            gridX: data.gridX,
+            gridY: data.gridY,
+            playerName: player.name,
+            color: player.color
+        });
+    });
+
     socket.on('clearMyPixels', (data) => {
         const { name } = data;
         for (let y = 0; y < GRID_SIZE; y++) {
@@ -252,6 +268,9 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         const player = players.get(socket.id);
         if (player) {
+            // Notify other players that this player disconnected (for cursor cleanup)
+            socket.broadcast.emit('playerDisconnected', { playerName: player.name });
+            
             // Clear all pixels drawn by this player
             for (let y = 0; y < GRID_SIZE; y++) {
                 for (let x = 0; x < GRID_SIZE; x++) {
