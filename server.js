@@ -142,18 +142,6 @@ io.on('connection', (socket) => {
         updateScores();
     });
 
-    // Clear entire canvas (admin/general clear)
-    socket.on('clearCanvas', () => {
-        for (let y = 0; y < GRID_SIZE; y++) {
-            for (let x = 0; x < GRID_SIZE; x++) {
-                gameBoard[y][x] = '';
-            }
-        }
-        // Send the cleared board to all clients
-        io.emit('fullBoard', gameBoard);
-        updateScores();
-    });
-
     socket.on('submitReport', (reportData) => {
         try {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
