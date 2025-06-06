@@ -9,7 +9,6 @@ const io = require('socket.io')(http, {
 });
 const path = require('path');
 const fs = require('fs');
-const Filter = require('bad-words');
 
 // Create necessary directories
 const reportsDir = path.join(__dirname, 'reports');
@@ -57,14 +56,6 @@ let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); 
 let players = new Map();
 let scores = new Map();
 
-// Initialize profanity filter
-const filter = new Filter();
-// Add custom words to filter if needed
-filter.addWords('noob', 'scrub'); // Add gaming-specific words
-
-// Chat message history (last 50 messages)
-let chatHistory = [];
-
 app.use(express.static(path.join(__dirname)));
 
 io.on('connection', (socket) => {
@@ -84,14 +75,6 @@ io.on('connection', (socket) => {
     socket.on('join', (data) => {
         const { name, color } = data;
         console.log(`🎮 Player joining: ${name} with color ${color}`);
-
-        // Check for profanity in username
-        if (filter.isProfane(name)) {
-            socket.emit('joinError', { 
-                message: 'Username contains inappropriate language. Please choose a different name.' 
-            });
-            return;
-        }
 
         // Check if name is banned
         if (bans.names.has(name.toLowerCase())) {
@@ -162,47 +145,6 @@ io.on('connection', (socket) => {
         }
         
         io.emit('boardUpdate', { x, y, color, playerName: player.name });
-    });
-
-    // Chat message handler
-    socket.on('chatMessage', (data) => {
-        const player = players.get(socket.id);
-        if (!player) return;
-
-        const { message } = data;
-        
-        // Check for profanity in message
-        if (filter.isProfane(message)) {
-            socket.emit('chatError', { 
-                message: 'Message contains inappropriate language and was not sent.' 
-            });
-            return;
-        }
-
-        // Create chat message object
-        const chatMessage = {
-            id: Date.now() + Math.random(),
-            playerName: player.name,
-            playerColor: player.color,
-            message: message.trim(),
-            timestamp: Date.now()
-        };
-
-        // Add to chat history
-        chatHistory.push(chatMessage);
-        
-        // Keep only last 50 messages
-        if (chatHistory.length > 50) {
-            chatHistory = chatHistory.slice(-50);
-        }
-
-        // Broadcast message to all players
-        io.emit('chatMessage', chatMessage);
-    });
-
-    // Send chat history to new players
-    socket.on('requestChatHistory', () => {
-        socket.emit('chatHistory', chatHistory);
     });
 
     socket.on('clearMyPixels', (data) => {
