@@ -406,16 +406,6 @@ io.on('connection', (socket) => {
         socket.emit('achievementsData', { achievements, stats });
     });
 
-    // Handle achievement notifications from the achievement system
-    achievementSystem.on('achievementUnlocked', (data) => {
-        if (data.playerId) {
-            io.to(data.playerId).emit('achievementUnlocked', {
-                achievement: data.achievement,
-                stats: data.stats
-            });
-        }
-    });
-
     socket.on('paint', (data) => {
         const { x, y, color } = data;
         const player = players.get(socket.id);

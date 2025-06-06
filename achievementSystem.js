@@ -1,8 +1,11 @@
 // Achievement System Backend Module
 // This module handles achievement tracking, validation, and persistence
 
-class AchievementSystemBackend {
+const EventEmitter = require('events');
+
+class AchievementSystemBackend extends EventEmitter {
     constructor() {
+        super();
         this.playerAchievements = new Map(); // playerId -> Set of achievement IDs
         this.playerStats = new Map(); // playerId -> stats object
         this.achievements = this.loadAchievementDefinitions();
