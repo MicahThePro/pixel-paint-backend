@@ -133,16 +133,24 @@ io.on('connection', (socket) => {
         console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'}`);
         if (!player) return;
 
-        // Only award points if this is a NEW pixel (not already owned by this player)
-        const isNewPixel = pixelOwners[y][x] !== player.name;
+        const previousOwner = pixelOwners[y][x];
+        const currentPixelColor = gameBoard[y][x];
         
+        // Update the pixel
         gameBoard[y][x] = color;
-        pixelOwners[y][x] = player.name; // Track who drew this pixel
+        pixelOwners[y][x] = player.name;
         
-        // Only update score for new pixels
-        if (isNewPixel) {
+        // Handle scoring based on pixel ownership
+        if (!previousOwner || previousOwner === '') {
+            // New pixel - player gains 1 point
             updateScore(player.name, 1);
+        } else if (previousOwner !== player.name) {
+            // Taking over someone else's pixel - they lose 1, you gain 1
+            updateScore(previousOwner, -1);
+            updateScore(player.name, 1);
+            console.log(`📊 Score transfer: ${previousOwner} -1, ${player.name} +1`);
         }
+        // If painting over your own pixel, no score change
         
         io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
@@ -297,6 +305,10 @@ function updateScore(playerName, points) {
     const playerScore = scores.get(playerName);
     if (playerScore) {
         playerScore.score += points;
+        // Ensure score doesn't go below 0
+        if (playerScore.score < 0) {
+            playerScore.score = 0;
+        }
         updateScores();
     }
 }
