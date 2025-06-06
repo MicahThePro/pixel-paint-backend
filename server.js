@@ -52,10 +52,9 @@ function saveBans() {
 
 const GRID_SIZE = 100;
 let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
 let players = new Map();
 let scores = new Map();
-
-
 
 app.use(express.static(path.join(__dirname)));
 
@@ -75,6 +74,7 @@ io.on('connection', (socket) => {
 
     socket.on('join', (data) => {
         const { name, color } = data;
+        console.log(`🎮 Player joining: ${name} with color ${color}`);
 
         // Check if name is banned
         if (bans.names.has(name.toLowerCase())) {
@@ -117,9 +117,20 @@ io.on('connection', (socket) => {
         io.emit('playerListUpdate', Array.from(players.values()));
     });
 
+    // Allow viewing the board without joining
+    socket.on('requestBoard', () => {
+        socket.emit('fullBoard', gameBoard);
+    });
+
+    // Allow requesting current scores without joining
+    socket.on('requestScores', () => {
+        updateScores();
+    });
+
     socket.on('paint', (data) => {
         const { x, y, color } = data;
         const player = players.get(socket.id);
+        console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'}`);
         if (!player) return;
 
         gameBoard[y][x] = color;
@@ -127,8 +138,6 @@ io.on('connection', (socket) => {
         updateScore(player.name, 1);
         io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
-
-
 
     socket.on('clearMyPixels', (data) => {
         const { name } = data;
@@ -161,6 +170,9 @@ io.on('connection', (socket) => {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const reportFilename = path.join(reportsDir, `report-${timestamp}.json`);
             const canvasFilename = path.join(reportsDir, `canvas-${timestamp}.png`);
+
+            console.log('Received report data:', reportData);
+            console.log('Saving to:', reportFilename);
 
             // Auto-ban for specific keywords in the reason or description
             const banKeywords = ['explicit', 'nsfw', 'inappropriate content', 'offensive'];
@@ -270,8 +282,6 @@ function updateScores() {
     
     io.emit('scoreUpdate', scoreArray);
 }
-
-
 
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
