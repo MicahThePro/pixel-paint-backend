@@ -133,9 +133,17 @@ io.on('connection', (socket) => {
         console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'}`);
         if (!player) return;
 
+        // Only award points if this is a NEW pixel (not already owned by this player)
+        const isNewPixel = pixelOwners[y][x] !== player.name;
+        
         gameBoard[y][x] = color;
         pixelOwners[y][x] = player.name; // Track who drew this pixel
-        updateScore(player.name, 1);
+        
+        // Only update score for new pixels
+        if (isNewPixel) {
+            updateScore(player.name, 1);
+        }
+        
         io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
 
@@ -143,8 +151,9 @@ io.on('connection', (socket) => {
         const { name } = data;
         for (let y = 0; y < GRID_SIZE; y++) {
             for (let x = 0; x < GRID_SIZE; x++) {
-                if (gameBoard[y][x] !== '') {
+                if (pixelOwners[y][x] === name) {
                     gameBoard[y][x] = '';
+                    pixelOwners[y][x] = '';
                     io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: name });
                 }
             }
