@@ -75,20 +75,39 @@ io.on('connection', (socket) => {
 
     socket.on('join', (data) => {
         const { name, color } = data;
-        
-        // Check if banned
-        if (isBanned(socket, name)) {
-            socket.emit('banned', 'You have been banned from the game.');
+
+        // Check if name is banned
+        if (bans.names.has(name.toLowerCase())) {
+            socket.emit('banned', { reason: 'This username has been banned for inappropriate behavior.' });
             socket.disconnect();
             return;
         }
 
-        // Track user patterns for detection
+        // Store user pattern data
         const userPattern = {
-            timestamp: Date.now(),
+            name: name.toLowerCase(),
             color: color,
-            name: name
+            ip: socket.clientIp,
+            joinTime: Date.now()
         };
+
+        // Check for pattern matching (repeated offenders)
+        let patternMatch = false;
+        bans.patterns.forEach((pattern, key) => {
+            if (pattern.color === color || 
+                pattern.name.toLowerCase().includes(name.toLowerCase()) ||
+                name.toLowerCase().includes(pattern.name.toLowerCase())) {
+                patternMatch = true;
+            }
+        });
+
+        if (patternMatch) {
+            socket.emit('banned', { reason: 'Your behavior pattern matches a banned user.' });
+            socket.disconnect();
+            return;
+        }
+
+        // Store the pattern for this connection
         socket.userPattern = userPattern;
 
         players.set(socket.id, { name, color });
@@ -96,16 +115,6 @@ io.on('connection', (socket) => {
         socket.emit('fullBoard', gameBoard);
         updateScores();
         io.emit('playerListUpdate', Array.from(players.values()));
-    });
-
-    // Allow viewing the board without joining
-    socket.on('requestBoard', () => {
-        socket.emit('fullBoard', gameBoard);
-    });
-
-    // Allow requesting current scores without joining
-    socket.on('requestScores', () => {
-        updateScores();
     });
 
     socket.on('paint', (data) => {
