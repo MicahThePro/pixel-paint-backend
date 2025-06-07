@@ -573,21 +573,13 @@ io.on('connection', (socket) => {
         const player = players.get(socket.id);
         if (!player) return;
 
-        // Prevent joining during active rounds (drawing, voting, or results phases)
-        if (challengeMode.active && challengeMode.phase !== 'waiting') {
-            socket.emit('challengeJoinBlocked', { 
-                message: 'Cannot join during an active round. Please wait for the next round to start.',
-                phase: challengeMode.phase 
-            });
-            return;
-        }
-
-        // Add player to challenge mode
+        // Add player to challenge mode regardless of phase
         challengeMode.players.set(socket.id, {
             name: player.name,
             color: player.color,
             canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
-            submitted: false
+            submitted: false,
+            waiting: challengeMode.active && challengeMode.phase !== 'waiting' // Mark as waiting if round is active
         });
 
         // Track achievement for joining challenge
@@ -599,11 +591,22 @@ io.on('connection', (socket) => {
             socket.emit('newAchievements', joinAchievements);
         }
 
-        socket.emit('challengeJoined', { 
-            phase: challengeMode.phase,
-            word: challengeMode.phase === 'drawing' ? challengeMode.currentWord : null,
-            timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
-        });
+        // Send appropriate response based on current phase
+        if (challengeMode.active && challengeMode.phase !== 'waiting') {
+            // Player joins during active round - put them in waiting state
+            socket.emit('challengeWaiting', { 
+                phase: challengeMode.phase,
+                playerCount: Array.from(challengeMode.players.values()).filter(p => !p.waiting).length,
+                timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+            });
+        } else {
+            // Normal join
+            socket.emit('challengeJoined', { 
+                phase: challengeMode.phase,
+                word: challengeMode.phase === 'drawing' ? challengeMode.currentWord : null,
+                timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+            });
+        }
 
         // Start challenge if we have 2+ players and not already active
         if (challengeMode.players.size >= 2 && !challengeMode.active) {
@@ -769,10 +772,11 @@ function startChallenge() {
     challengeMode.votes.clear();
     challengeMode.results = [];
 
-    // Reset all player submission status
+    // Reset all player submission status and move waiting players into the round
     for (let player of challengeMode.players.values()) {
         player.submitted = false;
         player.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+        player.waiting = false; // Move waiting players into the active round
     }
 
     // Start drawing timer
@@ -927,11 +931,16 @@ function endChallenge() {
 }
 
 function broadcastChallengeLobby() {
+    const activePlayers = Array.from(challengeMode.players.values()).filter(p => !p.waiting);
+    const waitingPlayers = Array.from(challengeMode.players.values()).filter(p => p.waiting);
+    
     const lobbyData = {
         playerCount: challengeMode.players.size,
+        activePlayerCount: activePlayers.length,
+        waitingPlayerCount: waitingPlayers.length,
         phase: challengeMode.phase,
         active: challengeMode.active,
-        players: Array.from(challengeMode.players.values()).map(p => ({
+        players: activePlayers.map(p => ({
             name: p.name,
             color: p.color,
             submitted: p.submitted
@@ -943,7 +952,25 @@ function broadcastChallengeLobby() {
         lobbyData.timeLeft = getRemainingTime();
     }
 
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeLobbyUpdate', lobbyData);
+    // Send regular lobby update to active players
+    const activePlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
+        !challengeMode.players.get(id).waiting
+    );
+    if (activePlayerIds.length > 0) {
+        io.to(activePlayerIds).emit('challengeLobbyUpdate', lobbyData);
+    }
+
+    // Send waiting update to waiting players
+    const waitingPlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
+        challengeMode.players.get(id).waiting
+    );
+    if (waitingPlayerIds.length > 0) {
+        io.to(waitingPlayerIds).emit('waitingLobbyUpdate', {
+            phase: challengeMode.phase,
+            activePlayerCount: activePlayers.length,
+            timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+        });
+    }
 }
 
 function getRemainingTime() {
