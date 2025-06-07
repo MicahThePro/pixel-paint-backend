@@ -305,7 +305,12 @@ let challengeMode = {
     submissions: new Map(), // playerId -> canvas data
     votes: new Map(), // voterId -> {targetId, rating}
     results: [],
-    timer: null
+    timer: null,
+    // New voting system properties
+    votingOrder: [], // Array of playerIds in voting order
+    currentVotingIndex: 0, // Current submission being voted on
+    currentSubmissionVotes: new Map(), // voterId -> rating for current submission
+    votingTimer: 15000 // 15 seconds per submission
 };
 
 app.use(express.static(path.join(__dirname)));
@@ -691,12 +696,14 @@ io.on('connection', (socket) => {
     socket.on('voteChallenge', (data) => {
         if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'voting') return;
         
-        const { targetPlayerId, rating } = data;
+        const { rating } = data;
+        const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
         
         // Don't allow voting for yourself
-        if (targetPlayerId === socket.id) return;
+        if (currentPlayerId === socket.id) return;
         
-        challengeMode.votes.set(socket.id, { targetId: targetPlayerId, rating });
+        // Store vote for current submission
+        challengeMode.currentSubmissionVotes.set(socket.id, rating);
         
         // Track achievement for voting
         achievementSystem.trackChallengeEvent(socket.id, 'voted');
@@ -706,11 +713,21 @@ io.on('connection', (socket) => {
         if (voteAchievements.length > 0) {
             socket.emit('newAchievements', voteAchievements);
         }
+
+        // Notify player that vote was received
+        socket.emit('voteReceived');
         
-        // Check if all players have voted
-        const allVoted = challengeMode.players.size <= challengeMode.votes.size;
+        // Check if all eligible players have voted on current submission
+        const eligibleVoters = Array.from(challengeMode.players.keys()).filter(id => id !== currentPlayerId);
+        const allVoted = eligibleVoters.every(voterId => challengeMode.currentSubmissionVotes.has(voterId));
+        
         if (allVoted) {
-            showResults();
+            // All players voted, move to next submission immediately
+            if (challengeMode.timer) {
+                clearTimeout(challengeMode.timer);
+                challengeMode.timer = null;
+            }
+            finishVotingOnCurrentSubmission();
         }
     });
 
@@ -801,34 +818,93 @@ function startVoting() {
 
     challengeMode.phase = 'voting';
     challengeMode.votes.clear();
+    challengeMode.currentSubmissionVotes.clear();
+    challengeMode.currentVotingIndex = 0;
 
-    // Prepare submissions for voting (exclude empty submissions)
-    const submissions = [];
-    for (let [playerId, canvas] of challengeMode.submissions) {
-        const player = challengeMode.players.get(playerId);
-        if (player) {
-            submissions.push({
-                playerId,
-                playerName: player.name,
-                canvas
-            });
-        }
+    // Prepare voting order (shuffle submissions for fairness)
+    challengeMode.votingOrder = Array.from(challengeMode.submissions.keys());
+    // Shuffle the array
+    for (let i = challengeMode.votingOrder.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [challengeMode.votingOrder[i], challengeMode.votingOrder[j]] = [challengeMode.votingOrder[j], challengeMode.votingOrder[i]];
     }
 
-    // Notify all players to start voting
+    if (challengeMode.votingOrder.length === 0) {
+        // No submissions, skip to results
+        showResults();
+        return;
+    }
+
+    // Start voting on first submission
+    startVotingOnCurrentSubmission();
+}
+
+function startVotingOnCurrentSubmission() {
+    if (challengeMode.currentVotingIndex >= challengeMode.votingOrder.length) {
+        // All submissions voted on, show results
+        showResults();
+        return;
+    }
+
+    challengeMode.currentSubmissionVotes.clear();
+    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
+    const currentPlayer = challengeMode.players.get(currentPlayerId);
+    const currentSubmission = challengeMode.submissions.get(currentPlayerId);
+
+    if (!currentPlayer || !currentSubmission) {
+        // Skip to next submission if data is missing
+        challengeMode.currentVotingIndex++;
+        startVotingOnCurrentSubmission();
+        return;
+    }
+
+    // Notify all players about current submission to vote on
     for (let playerId of challengeMode.players.keys()) {
-        io.to(playerId).emit('votingStarted', {
+        const isOwnSubmission = playerId === currentPlayerId;
+        io.to(playerId).emit('votingOnSubmission', {
             word: challengeMode.currentWord,
-            submissions: submissions.filter(sub => sub.playerId !== playerId) // Don't show their own submission
+            submission: {
+                playerId: currentPlayerId,
+                playerName: currentPlayer.name,
+                canvas: currentSubmission
+            },
+            isOwnSubmission: isOwnSubmission,
+            currentIndex: challengeMode.currentVotingIndex + 1,
+            totalSubmissions: challengeMode.votingOrder.length,
+            timeLeft: challengeMode.votingTimer
         });
     }
 
-    // Start voting timer (30 seconds)
+    // Start timer for this submission
     challengeMode.timer = setTimeout(() => {
-        showResults();
-    }, 30000);
+        finishVotingOnCurrentSubmission();
+    }, challengeMode.votingTimer);
 
     broadcastChallengeLobby();
+}
+
+function finishVotingOnCurrentSubmission() {
+    // Store votes for current submission
+    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
+    
+    // Calculate average rating for current submission
+    let totalRating = 0;
+    let voteCount = 0;
+    
+    for (let [voterId, rating] of challengeMode.currentSubmissionVotes) {
+        totalRating += rating;
+        voteCount++;
+        // Also store in main votes map for final results
+        challengeMode.votes.set(`${voterId}-${currentPlayerId}`, { targetId: currentPlayerId, rating });
+    }
+
+    // Move to next submission
+    challengeMode.currentVotingIndex++;
+    
+    // Small delay before next submission
+    setTimeout(() => {
+        startVotingOnCurrentSubmission();
+    }, 1000);
 }
 
 function showResults() {
@@ -923,6 +999,9 @@ function endChallenge() {
     challengeMode.submissions.clear();
     challengeMode.votes.clear();
     challengeMode.results = [];
+    challengeMode.votingOrder = [];
+    challengeMode.currentVotingIndex = 0;
+    challengeMode.currentSubmissionVotes.clear();
 
     // Notify all remaining players
     io.to(Array.from(challengeMode.players.keys())).emit('challengeEnded');
