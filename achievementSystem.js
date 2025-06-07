@@ -155,15 +155,13 @@ class AchievementSystemBackend extends EventEmitter {
         if ((x === 0 && y === 0) || (x === GRID_SIZE-1 && y === 0) || 
             (x === 0 && y === GRID_SIZE-1) || (x === GRID_SIZE-1 && y === GRID_SIZE-1)) {
             stats.corners_painted.add(`${x},${y}`);
-        }
-
-        // Speed tracking
+        }        // Speed tracking
         stats.speed_tracking.push(timestamp);
         // Keep only last 60 seconds of data
         const oneMinuteAgo = timestamp - 60000;
         stats.speed_tracking = stats.speed_tracking.filter(t => t > oneMinuteAgo);
 
-        this.checkAchievements(playerId);
+        return this.checkAchievements(playerId);
     }
 
     // Track social events

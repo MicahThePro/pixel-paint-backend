@@ -420,7 +420,20 @@ io.on('connection', (socket) => {
         pixelOwners[y][x] = player.name;
         
         // Track achievement for pixel painting
-        achievementSystem.trackPixelPainted(socket.id, x, y, color);
+        const newAchievements = achievementSystem.trackPixelPainted(socket.id, x, y, color);
+        
+        // Update player score in achievement system
+        const currentScore = scores.get(player.name)?.score || 0;
+        achievementSystem.updatePlayerScore(socket.id, currentScore);
+        
+        // Check for additional new achievements from score update
+        const scoreAchievements = achievementSystem.checkAchievements(socket.id);
+        const allNewAchievements = [...newAchievements, ...scoreAchievements];
+        
+        // Emit achievements if any were earned
+        if (allNewAchievements.length > 0) {
+            socket.emit('newAchievements', allNewAchievements);
+        }
         
         // Handle scoring based on pixel ownership
         if (!previousOwner || previousOwner === '') {
@@ -579,6 +592,12 @@ io.on('connection', (socket) => {
 
         // Track achievement for joining challenge
         achievementSystem.trackChallengeEvent(socket.id, 'joined');
+        
+        // Check for new achievements and send them
+        const joinAchievements = achievementSystem.checkAchievements(socket.id);
+        if (joinAchievements.length > 0) {
+            socket.emit('newAchievements', joinAchievements);
+        }
 
         socket.emit('challengeJoined', { 
             phase: challengeMode.phase,
@@ -651,6 +670,12 @@ io.on('connection', (socket) => {
         // Track achievement for submitting drawing
         achievementSystem.trackChallengeEvent(socket.id, 'submitted');
         
+        // Check for new achievements and send them
+        const submitAchievements = achievementSystem.checkAchievements(socket.id);
+        if (submitAchievements.length > 0) {
+            socket.emit('newAchievements', submitAchievements);
+        }
+        
         socket.emit('drawingSubmitted');
         
         // Check if all players have submitted
@@ -672,6 +697,12 @@ io.on('connection', (socket) => {
         
         // Track achievement for voting
         achievementSystem.trackChallengeEvent(socket.id, 'voted');
+        
+        // Check for new achievements and send them
+        const voteAchievements = achievementSystem.checkAchievements(socket.id);
+        if (voteAchievements.length > 0) {
+            socket.emit('newAchievements', voteAchievements);
+        }
         
         // Check if all players have voted
         const allVoted = challengeMode.players.size <= challengeMode.votes.size;
@@ -845,6 +876,15 @@ function showResults() {
         const winner = challengeMode.results[0];
         if (winner.voteCount > 0) { // Only count as winner if they received votes
             achievementSystem.trackChallengeEvent(winner.playerId, 'won');
+            
+            // Check for new achievements and send them to the winner
+            const winAchievements = achievementSystem.checkAchievements(winner.playerId);
+            if (winAchievements.length > 0) {
+                const winnerSocket = Array.from(io.sockets.sockets.values()).find(s => s.id === winner.playerId);
+                if (winnerSocket) {
+                    winnerSocket.emit('newAchievements', winAchievements);
+                }
+            }
         }
     }
 
