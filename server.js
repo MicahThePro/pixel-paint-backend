@@ -14,9 +14,18 @@ const fs = require('fs');
 const AchievementSystemBackend = require('./achievementSystem');
 const achievementSystem = new AchievementSystemBackend();
 
+// Import XP System
+const XPSystem = require('./xpSystem');
+const xpSystem = new XPSystem();
+
 // Save achievement data every 5 minutes
 setInterval(() => {
     achievementSystem.savePlayerData();
+}, 5 * 60 * 1000);
+
+// Save XP data every 5 minutes
+setInterval(() => {
+    xpSystem.saveData();
 }, 5 * 60 * 1000);
 
 // Create necessary directories
@@ -389,7 +398,29 @@ io.on('connection', (socket) => {
         // Check for new achievements and send them to the player
         const newAchievements = achievementSystem.checkAchievements(socket.persistentPlayerId);
         if (newAchievements.length > 0) {
+            let totalXPAwarded = 0;
+            
+            // Award XP for each achievement
+            for (const achievement of newAchievements) {
+                const xpAwarded = xpSystem.awardAchievementXP(socket.id, achievement.rarity);
+                totalXPAwarded += xpAwarded;
+            }
+            
             socket.emit('newAchievements', newAchievements);
+            
+            // Send updated XP data if any XP was awarded
+            if (totalXPAwarded > 0) {
+                const playerXPData = xpSystem.getPlayerXP(socket.id);
+                if (playerXPData) {
+                    socket.emit('xpUpdate', {
+                        totalXP: playerXPData.totalXP,
+                        dailyXP: playerXPData.dailyXP,
+                        achievementXP: playerXPData.achievementXP,
+                        currentStreak: playerXPData.currentStreak,
+                        longestStreak: playerXPData.longestStreak
+                    });
+                }
+            }
         }
         
         // Notify all players that someone joined
@@ -411,6 +442,48 @@ io.on('connection', (socket) => {
         const achievements = achievementSystem.getPlayerAchievements(socket.id);
         const stats = achievementSystem.getPlayerStats(socket.id);
         socket.emit('achievementsData', { achievements, stats });
+    });
+
+    // XP system handlers
+    socket.on('checkDailyReward', () => {
+        const player = players.get(socket.id);
+        if (!player) return;
+        
+        const result = xpSystem.checkDailyReward(socket.id, player.name);
+        socket.emit('dailyRewardResult', result);
+        
+        // Also send updated XP to player
+        const playerXPData = xpSystem.getPlayerXP(socket.id);
+        if (playerXPData) {
+            socket.emit('xpUpdate', {
+                totalXP: playerXPData.totalXP,
+                dailyXP: playerXPData.dailyXP,
+                achievementXP: playerXPData.achievementXP,
+                currentStreak: playerXPData.currentStreak,
+                longestStreak: playerXPData.longestStreak
+            });
+        }
+    });
+
+    socket.on('requestLeaderboard', () => {
+        const leaderboard = xpSystem.getLeaderboard(50);
+        socket.emit('leaderboardData', leaderboard);
+    });
+
+    socket.on('requestXPData', () => {
+        const player = players.get(socket.id);
+        if (!player) return;
+        
+        const playerXPData = xpSystem.getPlayerXP(socket.id);
+        if (playerXPData) {
+            socket.emit('xpUpdate', {
+                totalXP: playerXPData.totalXP,
+                dailyXP: playerXPData.dailyXP,
+                achievementXP: playerXPData.achievementXP,
+                currentStreak: playerXPData.currentStreak,
+                longestStreak: playerXPData.longestStreak
+            });
+        }
     });
 
     socket.on('paint', (data) => {
@@ -437,9 +510,31 @@ io.on('connection', (socket) => {
         const scoreAchievements = achievementSystem.checkAchievements(socket.persistentPlayerId);
         const allNewAchievements = [...newAchievements, ...scoreAchievements];
         
-        // Emit achievements if any were earned
+        // Award XP for new achievements and emit
         if (allNewAchievements.length > 0) {
+            let totalXPAwarded = 0;
+            
+            // Award XP for each achievement
+            for (const achievement of allNewAchievements) {
+                const xpAwarded = xpSystem.awardAchievementXP(socket.id, achievement.rarity);
+                totalXPAwarded += xpAwarded;
+            }
+            
             socket.emit('newAchievements', allNewAchievements);
+            
+            // Send updated XP data if any XP was awarded
+            if (totalXPAwarded > 0) {
+                const playerXPData = xpSystem.getPlayerXP(socket.id);
+                if (playerXPData) {
+                    socket.emit('xpUpdate', {
+                        totalXP: playerXPData.totalXP,
+                        dailyXP: playerXPData.dailyXP,
+                        achievementXP: playerXPData.achievementXP,
+                        currentStreak: playerXPData.currentStreak,
+                        longestStreak: playerXPData.longestStreak
+                    });
+                }
+            }
         }
         
         // Handle scoring based on pixel ownership
@@ -603,7 +698,29 @@ io.on('connection', (socket) => {
         // Check for new achievements and send them
         const joinAchievements = achievementSystem.checkAchievements(socket.persistentPlayerId);
         if (joinAchievements.length > 0) {
+            let totalXPAwarded = 0;
+            
+            // Award XP for each achievement
+            for (const achievement of joinAchievements) {
+                const xpAwarded = xpSystem.awardAchievementXP(socket.id, achievement.rarity);
+                totalXPAwarded += xpAwarded;
+            }
+            
             socket.emit('newAchievements', joinAchievements);
+            
+            // Send updated XP data if any XP was awarded
+            if (totalXPAwarded > 0) {
+                const playerXPData = xpSystem.getPlayerXP(socket.id);
+                if (playerXPData) {
+                    socket.emit('xpUpdate', {
+                        totalXP: playerXPData.totalXP,
+                        dailyXP: playerXPData.dailyXP,
+                        achievementXP: playerXPData.achievementXP,
+                        currentStreak: playerXPData.currentStreak,
+                        longestStreak: playerXPData.longestStreak
+                    });
+                }
+            }
         }
 
         socket.emit('challengeJoined', { 
@@ -680,7 +797,29 @@ io.on('connection', (socket) => {
         // Check for new achievements and send them
         const submitAchievements = achievementSystem.checkAchievements(socket.persistentPlayerId);
         if (submitAchievements.length > 0) {
+            let totalXPAwarded = 0;
+            
+            // Award XP for each achievement
+            for (const achievement of submitAchievements) {
+                const xpAwarded = xpSystem.awardAchievementXP(socket.id, achievement.rarity);
+                totalXPAwarded += xpAwarded;
+            }
+            
             socket.emit('newAchievements', submitAchievements);
+            
+            // Send updated XP data if any XP was awarded
+            if (totalXPAwarded > 0) {
+                const playerXPData = xpSystem.getPlayerXP(socket.id);
+                if (playerXPData) {
+                    socket.emit('xpUpdate', {
+                        totalXP: playerXPData.totalXP,
+                        dailyXP: playerXPData.dailyXP,
+                        achievementXP: playerXPData.achievementXP,
+                        currentStreak: playerXPData.currentStreak,
+                        longestStreak: playerXPData.longestStreak
+                    });
+                }
+            }
         }
         
         socket.emit('drawingSubmitted');
@@ -708,7 +847,29 @@ io.on('connection', (socket) => {
         // Check for new achievements and send them
         const voteAchievements = achievementSystem.checkAchievements(socket.persistentPlayerId);
         if (voteAchievements.length > 0) {
+            let totalXPAwarded = 0;
+            
+            // Award XP for each achievement
+            for (const achievement of voteAchievements) {
+                const xpAwarded = xpSystem.awardAchievementXP(socket.id, achievement.rarity);
+                totalXPAwarded += xpAwarded;
+            }
+            
             socket.emit('newAchievements', voteAchievements);
+            
+            // Send updated XP data if any XP was awarded
+            if (totalXPAwarded > 0) {
+                const playerXPData = xpSystem.getPlayerXP(socket.id);
+                if (playerXPData) {
+                    socket.emit('xpUpdate', {
+                        totalXP: playerXPData.totalXP,
+                        dailyXP: playerXPData.dailyXP,
+                        achievementXP: playerXPData.achievementXP,
+                        currentStreak: playerXPData.currentStreak,
+                        longestStreak: playerXPData.longestStreak
+                    });
+                }
+            }
         }
         
         // Check if all players have voted
@@ -890,7 +1051,29 @@ function showResults() {
                 // Check for new achievements and send them to the winner
                 const winAchievements = achievementSystem.checkAchievements(winnerSocket.persistentPlayerId);
                 if (winAchievements.length > 0) {
+                    let totalXPAwarded = 0;
+                    
+                    // Award XP for each achievement
+                    for (const achievement of winAchievements) {
+                        const xpAwarded = xpSystem.awardAchievementXP(winnerSocket.id, achievement.rarity);
+                        totalXPAwarded += xpAwarded;
+                    }
+                    
                     winnerSocket.emit('newAchievements', winAchievements);
+                    
+                    // Send updated XP data if any XP was awarded
+                    if (totalXPAwarded > 0) {
+                        const playerXPData = xpSystem.getPlayerXP(winnerSocket.id);
+                        if (playerXPData) {
+                            winnerSocket.emit('xpUpdate', {
+                                totalXP: playerXPData.totalXP,
+                                dailyXP: playerXPData.dailyXP,
+                                achievementXP: playerXPData.achievementXP,
+                                currentStreak: playerXPData.currentStreak,
+                                longestStreak: playerXPData.longestStreak
+                            });
+                        }
+                    }
                 }
             }
         }
