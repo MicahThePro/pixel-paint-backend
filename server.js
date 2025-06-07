@@ -60,69 +60,10 @@ function saveBans() {
 }
 
 const GRID_SIZE = 100;
-
-// Room management system
-const rooms = new Map(); // roomCode -> room data
-const DEFAULT_ROOM = 'public'; // Public room for backward compatibility
-
-// Room structure:
-// {
-//   code: string,
-//   gameBoard: array,
-//   pixelOwners: array,
-//   players: Map,
-//   scores: Map,
-//   challengeMode: object,
-//   createdAt: timestamp,
-//   lastActivity: timestamp
-// }
-
-// Initialize default public room
-function initializeRoom(roomCode) {
-    return {
-        code: roomCode,
-        gameBoard: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
-        pixelOwners: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
-        players: new Map(),
-        scores: new Map(),
-        challengeMode: {
-            active: false,
-            players: new Map(),
-            currentWord: '',
-            startTime: null,
-            duration: 180000,
-            phase: 'waiting',
-            submissions: new Map(),
-            votes: new Map(),
-            results: [],
-            timer: null
-        },
-        createdAt: Date.now(),
-        lastActivity: Date.now()
-    };
-}
-
-// Generate unique room code
-function generateRoomCode() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    do {
-        code = '';
-        for (let i = 0; i < 6; i++) {
-            code += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-    } while (rooms.has(code));
-    return code;
-}
-
-// Initialize public room
-rooms.set(DEFAULT_ROOM, initializeRoom(DEFAULT_ROOM));
-
-// Legacy variables for backward compatibility (point to public room)
-let gameBoard = rooms.get(DEFAULT_ROOM).gameBoard;
-let pixelOwners = rooms.get(DEFAULT_ROOM).pixelOwners;
-let players = rooms.get(DEFAULT_ROOM).players;
-let scores = rooms.get(DEFAULT_ROOM).scores;
+let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
+let players = new Map();
+let scores = new Map();
 
 // Challenge Words List (1000+ words for drawing prompts)
 const challengeWords = [
@@ -383,27 +324,9 @@ io.on('connection', (socket) => {
         return;
     }
 
-    // Room management handlers
-    socket.on('createRoom', () => {
-        const roomCode = generateRoomCode();
-        const newRoom = initializeRoom(roomCode);
-        rooms.set(roomCode, newRoom);
-        console.log(`🏠 Room created: ${roomCode}`);
-        socket.emit('roomCreated', { roomCode });
-    });
-
-    socket.on('joinRoom', (data) => {
-        const { roomCode, name, color, playerId } = data;
-        console.log(`🎮 Player ${name} trying to join room: ${roomCode || DEFAULT_ROOM}`);
-
-        // Use default room if no room code provided (backward compatibility)
-        const targetRoom = roomCode || DEFAULT_ROOM;
-        
-        // Check if room exists
-        if (!rooms.has(targetRoom)) {
-            socket.emit('joinRoomError', { message: 'Room not found!' });
-            return;
-        }
+    socket.on('join', (data) => {
+        const { name, color, playerId } = data;
+        console.log(`🎮 Player joining: ${name} with color ${color}`);
 
         // Check if name is banned
         if (bans.names.has(name.toLowerCase())) {
@@ -436,39 +359,27 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Store the pattern and room info on socket
+        // Store the pattern for this connection
         socket.userPattern = userPattern;
+        
+        // Store persistent player ID on socket for achievement tracking
         socket.persistentPlayerId = playerId;
-        socket.currentRoom = targetRoom;
 
-        // Get room data
-        const room = rooms.get(targetRoom);
-        room.lastActivity = Date.now();
-
-        // Join socket to room
-        socket.join(targetRoom);
-
-        // Add player to room
-        room.players.set(socket.id, { name, color });
-        room.scores.set(name, { score: 0, color });
-        
-        // Send room data to player
-        socket.emit('fullBoard', room.gameBoard);
-        socket.emit('roomJoined', { roomCode: targetRoom });
-        
-        // Update scores and player list for this room
-        updateRoomScores(targetRoom);
-        io.to(targetRoom).emit('playerListUpdate', Array.from(room.players.values()));
+        players.set(socket.id, { name, color });
+        scores.set(name, { score: 0, color });
+        socket.emit('fullBoard', gameBoard);
+        updateScores();
+        io.emit('playerListUpdate', Array.from(players.values()));
         
         // Track achievement for joining game
         achievementSystem.trackSocialEvent(socket.persistentPlayerId, 'game_joined');
         
-        // Track achievement for meeting other players in this room
-        room.players.forEach((player, socketId) => {
-            if (socketId !== socket.id) {
+        // Track achievement for meeting other players
+        players.forEach((player, playerId) => {
+            if (playerId !== socket.id) {
                 achievementSystem.trackSocialEvent(socket.persistentPlayerId, 'player_met', { playerName: player.name });
                 // Only track for other players if they have a persistent ID
-                const otherSocket = [...io.sockets.sockets.values()].find(s => s.id === socketId);
+                const otherSocket = [...io.sockets.sockets.values()].find(s => s.id === playerId);
                 if (otherSocket && otherSocket.persistentPlayerId) {
                     achievementSystem.trackSocialEvent(otherSocket.persistentPlayerId, 'player_met', { playerName: name });
                 }
@@ -481,71 +392,37 @@ io.on('connection', (socket) => {
             socket.emit('newAchievements', newAchievements);
         }
         
-        // Notify all players in this room that someone joined
-        io.to(targetRoom).emit('playerJoined', { playerName: name, playerId: socket.persistentPlayerId });
-        
-        console.log(`✅ Player ${name} joined room ${targetRoom} (${room.players.size} players total)`);
-    });
-
-    // Legacy join handler (for backward compatibility)
-    socket.on('join', (data) => {
-        // Forward to joinRoom with default room
-        const joinData = { ...data, roomCode: DEFAULT_ROOM };
-        socket.emit('joinRoom', joinData);
+        // Notify all players that someone joined
+        io.emit('playerJoined', { playerName: name, playerId: socket.persistentPlayerId });
     });
 
     // Allow viewing the board without joining
     socket.on('requestBoard', () => {
-        const roomCode = socket.currentRoom || DEFAULT_ROOM;
-        const room = rooms.get(roomCode);
-        if (room) {
-            socket.emit('fullBoard', room.gameBoard);
-        }
+        socket.emit('fullBoard', gameBoard);
     });
 
     // Allow requesting current scores without joining
     socket.on('requestScores', () => {
-        const roomCode = socket.currentRoom || DEFAULT_ROOM;
-        updateRoomScores(roomCode);
+        updateScores();
     });
 
     // Achievement system handlers
     socket.on('requestAchievements', () => {
-        const achievements = achievementSystem.getPlayerAchievements(socket.id);
-        const stats = achievementSystem.getPlayerStats(socket.id);
-        socket.emit('achievementsData', { achievements, stats });
+        if (socket.persistentPlayerId) {
+            const achievements = achievementSystem.getPlayerAchievements(socket.persistentPlayerId);
+            const stats = achievementSystem.getPlayerStats(socket.persistentPlayerId);
+            socket.emit('achievementsData', { achievements, stats });
+        }
     });
 
     socket.on('paint', (data) => {
         const { x, y, color } = data;
-        const roomCode = socket.currentRoom;
-        if (!roomCode) return;
-
-        const room = rooms.get(roomCode);
-        if (!room) return;
-
-        const player = room.players.get(socket.id);
-        console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'} in room ${roomCode}`);
+        const player = players.get(socket.id);
+        console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'}`);
         if (!player) return;
 
-        const previousOwner = room.pixelOwners[y][x];
-        const currentPixelColor = room.gameBoard[y][x];
-        
-        // Update the pixel in this room
-        room.gameBoard[y][x] = color;
-        room.pixelOwners[y][x] = player.name;
-        room.lastActivity = Date.now();
-        
-        // Handle scoring based on pixel ownership
-        if (!previousOwner || previousOwner === '') {
-            // New pixel - player gains 1 point
-            updateRoomScore(roomCode, player.name, 1);
-        } else if (previousOwner !== player.name) {
-            // Taking over someone else's pixel - they lose 1, you gain 1
-            updateRoomScore(roomCode, previousOwner, -1);
-            updateRoomScore(roomCode, player.name, 1);
-        }
-        // If painting over your own pixel, no score change
+        const previousOwner = pixelOwners[y][x];
+        const currentPixelColor = gameBoard[y][x];
         
         // Update the pixel
         gameBoard[y][x] = color;
