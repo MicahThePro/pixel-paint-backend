@@ -408,11 +408,9 @@ io.on('connection', (socket) => {
 
     // Achievement system handlers
     socket.on('requestAchievements', () => {
-        if (socket.persistentPlayerId) {
-            const achievements = achievementSystem.getPlayerAchievements(socket.persistentPlayerId);
-            const stats = achievementSystem.getPlayerStats(socket.persistentPlayerId);
-            socket.emit('achievementsData', { achievements, stats });
-        }
+        const achievements = achievementSystem.getPlayerAchievements(socket.id);
+        const stats = achievementSystem.getPlayerStats(socket.id);
+        socket.emit('achievementsData', { achievements, stats });
     });
 
     socket.on('paint', (data) => {
