@@ -13,13 +13,14 @@ const fs = require('fs');
 // Create necessary directories
 const reportsDir = path.join(__dirname, 'reports');
 const bansDir = path.join(__dirname, 'bans');
-if (!fs.existsSync(reportsDir)) fs.mkdirSync(bansDir);
+if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir);
+if (!fs.existsSync(bansDir)) fs.mkdirSync(bansDir);
 
 // Load or initialize bans data
 let bans = {
     ips: new Set(),
     names: new Set(),
-    patterns: new Map() // Store user patterns for detection
+    patterns: new Map()
 };
 
 // Load existing bans
@@ -380,32 +381,31 @@ io.on('connection', (socket) => {
     socket.on('paint', (data) => {
         const { x, y, color } = data;
         const player = players.get(socket.id);
-        console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'}`);
         if (!player) return;
 
         const previousOwner = pixelOwners[y][x];
         const currentPixelColor = gameBoard[y][x];
         
-        // Update the pixel
-        gameBoard[y][x] = color;
-        pixelOwners[y][x] = player.name;
-        
-        // Handle scoring based on pixel ownership and whether it's an eraser action
+        // Handle eraser action
         const isEraserAction = color === '#ffffff';
         
         if (isEraserAction) {
-            // Eraser logic: only deduct points if the pixel was the user's own color
+            // Eraser logic: only allow erasing your own pixels
             if (previousOwner === player.name && currentPixelColor !== '#ffffff' && currentPixelColor !== '') {
-                // User is erasing their own colored pixel - deduct 1 point
+                // User is erasing their own colored pixel - deduct 1 point and clear pixel
+                gameBoard[y][x] = '';
+                pixelOwners[y][x] = '';
                 updateScore(player.name, -1);
                 console.log(`🧽 Eraser: ${player.name} lost 1 point for erasing own pixel`);
+                io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: player.name });
             }
-            // No points gained or lost for erasing empty pixels or others' pixels
-            
-            // For eraser, don't assign ownership - set pixel owner to empty
-            pixelOwners[y][x] = '';
+            // If trying to erase empty pixel or someone else's pixel, do nothing
+            return;
         } else {
             // Normal paint logic
+            gameBoard[y][x] = color;
+            pixelOwners[y][x] = player.name;
+            
             if (!previousOwner || previousOwner === '') {
                 // New pixel - player gains 1 point
                 updateScore(player.name, 1);
@@ -413,12 +413,11 @@ io.on('connection', (socket) => {
                 // Taking over someone else's pixel - they lose 1, you gain 1
                 updateScore(previousOwner, -1);
                 updateScore(player.name, 1);
-                console.log(`📊 Score transfer: ${previousOwner} -1, ${player.name} +1`);
             }
             // If painting over your own pixel, no score change
+            
+            io.emit('boardUpdate', { x, y, color, playerName: player.name });
         }
-        
-        io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
 
     // Handle cursor movement
