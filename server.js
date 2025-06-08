@@ -51,25 +51,10 @@ function saveBans() {
 }
 
 const GRID_SIZE = 100;
-
-// Game state
 let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
 let players = new Map();
 let scores = new Map();
-let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-
-// Livestream state
-const OWNER_IP = '192.168.1.84';
-// For testing purposes, also allow localhost connections to be treated as owner
-const TEST_IPS = ['127.0.0.1', '::1', 'localhost', '192.168.1.84'];
-
-let livestream = {
-    active: false,
-    ownerSocketId: null,
-    canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
-    viewers: new Set(),
-    chatMessages: []
-};
 
 // Challenge Words List (1000+ words for drawing prompts)
 const challengeWords = [
@@ -298,66 +283,7 @@ const challengeWords = [
 "fountain", "water", "decorative", "peaceful", "splash", "beauty", "public", "relaxing", "artistic", "refreshing",
 "garden", "flower", "peaceful", "beauty", "nature", "color", "fragrance", "cultivation", "tranquil", "artistic",
 "maze", "puzzle", "path", "challenge", "hedge", "lost", "find", "way", "confusing", "adventure",
-"labyrinth", "path", "spiritual", "journey", "meditation", "center", "ancient", "walking", "peaceful", "symbolic",
-"bubble", "candy", "lollipop", "gumball", "cotton candy", "popcorn", "pretzel", "donut",
-"unicorn horn", "fairy wings", "magic wand", "crystal ball", "shooting star", "comet tail",
-"jellybean", "gummy bear", "chocolate", "marshmallow", "cupcake", "muffin", "waffle", "pancake",
-"sock", "mitten", "scarf", "bow tie", "top hat", "headband", "earrings", "bracelet",
-"octopus tentacle", "peacock feather", "giraffe neck", "elephant trunk", "monkey tail", "cat whiskers",
-"dog bone", "fish scales", "bird nest", "spider web", "butterfly wing", "bee hive",
-"ladybug spots", "snail shell", "turtle shell", "crab claw", "lobster", "seahorse",
-"flamingo", "toucan", "parrot", "hummingbird", "woodpecker", "robin", "cardinal", "blue jay",
-"hamster", "guinea pig", "ferret", "hedgehog", "raccoon", "skunk", "squirrel", "chipmunk",
-"smartphone", "laptop", "headphones", "gaming controller", "VR headset", "drone", "selfie stick",
-"charging cable", "wifi symbol", "bluetooth", "USB stick", "mouse pad", "keyboard", "monitor",
-"3D printer", "robot arm", "circuit board", "battery", "solar panel", "wind turbine",
-"satellite dish", "antenna", "radar", "GPS", "barcode", "QR code", "emoji", "hashtag",
-"spaghetti", "ramen noodles", "sushi roll", "taco", "burrito", "quesadilla", "nacho",
-"french fries", "onion rings", "chicken nuggets", "fish and chips", "hot sauce", "ketchup",
-"avocado", "coconut", "mango", "kiwi", "dragonfruit", "starfruit", "papaya", "pomegranate",
-"cinnamon roll", "bagel", "croissant", "baguette", "pretzel", "breadstick", "garlic bread",
-"smoothie", "milkshake", "lemonade", "bubble tea", "hot chocolate", "cappuccino", "espresso",
-"skateboard", "roller blades", "ice skates", "ski boots", "snowboard", "surfboard", "kayak paddle",
-"tennis racket", "badminton", "ping pong paddle", "hockey stick", "lacrosse stick", "golf club",
-"bowling pin", "dartboard", "pool table", "chess board", "checkers", "dominos", "playing cards",
-"dice", "lottery ticket", "trophy", "medal", "ribbon", "certificate", "crown", "scepter",
-"thundercloud", "lightning bolt", "tornado", "hurricane", "snowstorm", "hailstone", "dewdrop",
-"icicle", "frost", "fog", "mist", "aurora", "rainbow", "sunbeam", "moonbeam", "starlight",
-"meteor shower", "eclipse", "constellation", "galaxy", "nebula", "black hole", "asteroid",
-"sand dune", "cliff", "canyon", "valley", "plateau", "mesa", "geyser", "hot spring",
-"hot air balloon", "parachute", "hang glider", "jet ski", "speedboat", "yacht", "cruise ship",
-"submarine", "spaceship", "rocket ship", "UFO", "time machine", "hoverboard", "segway",
-"unicycle", "tricycle", "scooter", "motorcycle", "dirt bike", "monster truck", "race car",
-"dragon", "phoenix", "griffin", "pegasus", "centaur", "mermaid", "fairy", "elf", "dwarf",
-"wizard hat", "magic potion", "spell book", "enchanted forest", "castle tower", "drawbridge",
-"treasure chest", "pirate ship", "skull and crossbones", "treasure map", "compass rose",
-"genie lamp", "flying carpet", "golden fleece", "holy grail", "excalibur", "thor hammer",
-"toothbrush", "shampoo bottle", "soap bar", "towel", "toilet paper", "tissue box", "bandaid",
-"thermometer", "medicine bottle", "vitamin", "sleeping mask", "pillow", "blanket", "sheet",
-"alarm clock", "calendar", "picture frame", "vase", "candle", "matches", "lighter", "ashtray",
-"vacuum cleaner", "iron", "ironing board", "washing machine", "dryer", "detergent", "fabric softener",
-"calculator", "stapler", "paper clip", "rubber band", "pushpin", "thumbtack", "sticky note",
-"highlighter", "marker", "crayon", "colored pencil", "glue stick", "scissors", "ruler",
-"protractor", "compass", "globe", "map", "atlas", "dictionary", "thesaurus", "encyclopedia",
-"graduation cap", "diploma", "report card", "homework", "test paper", "grade", "gold star",
-"electric guitar", "bass guitar", "ukulele", "banjo", "harmonica", "saxophone", "trumpet",
-"trombone", "flute", "clarinet", "violin bow", "cello", "harp", "xylophone", "maracas",
-"tambourine", "bongos", "cymbals", "triangle", "conductor baton", "music note", "treble clef",
-"paint palette", "easel", "canvas", "sketch pad", "charcoal", "pastels", "watercolor", "acrylic",
-"yo-yo", "slinky", "rubik's cube", "puzzle piece", "jigsaw puzzle", "crossword", "sudoku",
-"video game", "arcade", "pinball machine", "slot machine", "poker chip", "roulette wheel",
-"action figure", "barbie doll", "teddy bear", "rocking horse", "toy car", "toy train",
-"building blocks", "lego brick", "lincoln logs", "tinker toys", "play dough", "silly putty",
-"smiley face", "frowny face", "winking face", "surprised face", "angry face", "crying face",
-"laughing face", "sleeping face", "thinking face", "confused face", "heart eyes", "kiss",
-"thumbs up", "thumbs down", "peace sign", "ok hand", "fist bump", "high five", "applause",
-"test tube", "beaker", "microscope", "petri dish", "DNA strand", "molecule", "atom", "electron",
-"periodic table", "chemical formula", "magnet", "compass", "scale", "measuring cup", "thermometer",
-"space helmet", "astronaut suit", "space station", "lunar rover", "mars rover", "satellite",
-"rubber duck", "whoopee cushion", "magic 8 ball", "lava lamp", "snow globe", "jack in the box",
-"cuckoo clock", "grandfather clock", "hourglass", "sundial", "weather vane", "windchimes",
-"dreamcatcher", "lucky charm", "horseshoe", "four leaf clover", "wishbone", "shooting star",
-"pot of gold", "leprechaun", "gingerbread man", "cookie cutter", "rolling pin", "whisk"
+"labyrinth", "path", "spiritual", "journey", "meditation", "center", "ancient", "walking", "peaceful", "symbolic"
 ];
 
 let challengeMode = {
@@ -378,6 +304,24 @@ let challengeMode = {
     votingTimer: 15000 // 15 seconds per submission
 };
 
+// Guess Mode Data
+let guessMode = {
+    active: false,
+    players: new Map(), // playerId -> {name, color, isDrawer: boolean, hasGuessed: boolean, guessTime: number}
+    currentWord: '',
+    currentDrawer: null, // playerId of current drawer
+    drawingStartTime: null,
+    drawingDuration: 120000, // 2 minutes per drawing
+    canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')), // Shared canvas for current drawing
+    phase: 'waiting', // 'waiting', 'drawing', 'results'
+    roundNumber: 0,
+    playerOrder: [], // Array of playerIds for turn rotation
+    currentPlayerIndex: 0,
+    correctGuessers: [], // Array of {playerId, playerName, guessTime}
+    timer: null,
+    autoProgressTimer: null
+};
+
 app.use(express.static(path.join(__dirname)));
 
 io.on('connection', (socket) => {
@@ -386,20 +330,6 @@ io.on('connection', (socket) => {
     // Get IP address (works with both direct connections and proxies)
     const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
     socket.clientIp = clientIp;
-    
-    // Check if this is the owner IP
-    const isOwner = clientIp === OWNER_IP || TEST_IPS.includes(clientIp) || clientIp.includes('127.0.0.1') || clientIp.includes('::1');
-    socket.isOwner = isOwner;
-    
-    console.log(`Is Owner: ${isOwner}, Owner IP: ${OWNER_IP}, Client IP: ${clientIp}`); // Debug logging
-
-    // Notify client if they are the owner
-    if (isOwner) {
-        socket.emit('ownerDetected', { 
-            isOwner: true,
-            livestreamActive: livestream.active 
-        });
-    }
 
     // Check if IP is banned
     if (bans.ips.has(clientIp)) {
@@ -546,12 +476,8 @@ io.on('connection', (socket) => {
                 pixelOwners[y][x] = ''; // Also clear pixel ownership
             }
         }
-        
-        // Reset all player scores to 0 instead of removing them
-        for (let [playerName, playerData] of scores) {
-            playerData.score = 0;
-        }
-        
+        // Reset all player scores to 0
+        scores.clear();
         // Send the cleared board to all clients
         io.emit('fullBoard', gameBoard);
         updateScores();
@@ -769,104 +695,144 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Livestream Handlers
-    socket.on('startLivestream', () => {
-        if (!socket.isOwner) return;
-        
-        livestream.active = true;
-        livestream.ownerSocketId = socket.id;
-        livestream.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-        livestream.chatMessages = [];
-        
-        // Notify all users that livestream has started
-        io.emit('livestreamStarted', {
-            ownerName: players.get(socket.id)?.name || 'Owner'
-        });
-        
-        console.log('🎥 Livestream started by owner');
-    });
-    
-    socket.on('stopLivestream', () => {
-        if (!socket.isOwner || !livestream.active) return;
-        
-        livestream.active = false;
-        livestream.ownerSocketId = null;
-        livestream.viewers.clear();
-        
-        // Notify all users that livestream has ended
-        io.emit('livestreamEnded');
-        
-        console.log('🎥 Livestream ended by owner');
-    });
-    
-    socket.on('joinLivestream', () => {
-        if (!livestream.active) return;
-        
-        livestream.viewers.add(socket.id);
-        
-        // Send current livestream state to viewer
-        socket.emit('livestreamJoined', {
-            canvas: livestream.canvas,
-            chatMessages: livestream.chatMessages,
-            viewerCount: livestream.viewers.size
-        });
-        
-        // Update viewer count for all viewers and owner
-        const viewerUpdate = { viewerCount: livestream.viewers.size };
-        io.to(Array.from(livestream.viewers)).emit('livestreamViewerUpdate', viewerUpdate);
-        if (livestream.ownerSocketId) {
-            io.to(livestream.ownerSocketId).emit('livestreamViewerUpdate', viewerUpdate);
-        }
-    });
-    
-    socket.on('leaveLivestream', () => {
-        livestream.viewers.delete(socket.id);
-        
-        // Update viewer count for remaining viewers and owner
-        const viewerUpdate = { viewerCount: livestream.viewers.size };
-        io.to(Array.from(livestream.viewers)).emit('livestreamViewerUpdate', viewerUpdate);
-        if (livestream.ownerSocketId) {
-            io.to(livestream.ownerSocketId).emit('livestreamViewerUpdate', viewerUpdate);
-        }
-    });
-    
-    socket.on('livestreamPaint', (data) => {
-        if (!socket.isOwner || !livestream.active) return;
-        
-        const { x, y, color } = data;
-        livestream.canvas[y][x] = color;
-        
-        // Broadcast paint to all viewers
-        io.to(Array.from(livestream.viewers)).emit('livestreamCanvasUpdate', { x, y, color });
-    });
-    
-    socket.on('livestreamChat', (data) => {
-        if (!livestream.active) return;
-        
+    // Guess Mode Handlers
+    socket.on('joinGuess', () => {
         const player = players.get(socket.id);
         if (!player) return;
-        
-        const chatMessage = {
-            id: `${Date.now()}-${socket.id}`,
-            playerName: player.name,
-            message: data.message.trim().substring(0, 200), // Limit message length
-            timestamp: Date.now(),
-            isOwner: socket.isOwner
+
+        // Add player to guess mode
+        guessMode.players.set(socket.id, {
+            name: player.name,
+            color: player.color,
+            isDrawer: false,
+            hasGuessed: false,
+            guessTime: null
+        });
+
+        // Send appropriate response based on current phase
+        if (guessMode.active && guessMode.phase !== 'waiting') {
+            // Player joins during active round - put them in waiting state
+            socket.emit('guessWaiting', { 
+                phase: guessMode.phase,
+                drawerName: guessMode.currentDrawer ? guessMode.players.get(guessMode.currentDrawer)?.name : null,
+                playerCount: guessMode.players.size - 1, // Exclude current drawer
+                timeLeft: guessMode.phase === 'drawing' ? getGuessRemainingTime() : null
+            });
+        } else {
+            // Normal join
+            socket.emit('guessJoined', { 
+                phase: guessMode.phase
+            });
+        }
+
+        // Start guess game if we have 2+ players and not already active
+        if (guessMode.players.size >= 2 && !guessMode.active) {
+            startGuessGame();
+        }
+
+        // Send updated guess lobby
+        broadcastGuessLobby();
+    });
+
+    socket.on('requestGuessStatus', () => {
+        // Send current guess status to requesting player
+        const lobbyData = {
+            playerCount: guessMode.players.size,
+            phase: guessMode.phase,
+            active: guessMode.active,
+            players: Array.from(guessMode.players.values()).map(p => ({
+                name: p.name,
+                color: p.color,
+                isDrawer: p.isDrawer,
+                hasGuessed: p.hasGuessed
+            }))
         };
+
+        if (guessMode.phase === 'drawing' && guessMode.currentDrawer) {
+            const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+            lobbyData.drawerName = drawerPlayer?.name;
+            lobbyData.timeLeft = getGuessRemainingTime();
+        }
+
+        socket.emit('guessLobbyUpdate', lobbyData);
+    });
+
+    socket.on('leaveGuess', () => {
+        const wasDrawer = guessMode.players.get(socket.id)?.isDrawer;
+        guessMode.players.delete(socket.id);
         
-        livestream.chatMessages.push(chatMessage);
-        
-        // Keep only last 50 messages
-        if (livestream.chatMessages.length > 50) {
-            livestream.chatMessages.shift();
+        // If the drawer left, end the current round
+        if (wasDrawer && guessMode.active) {
+            endCurrentGuessRound();
         }
         
-        // Broadcast chat message to all viewers and owner
-        const recipients = Array.from(livestream.viewers);
-        if (livestream.ownerSocketId) {
-            recipients.push(livestream.ownerSocketId);
+        // If we drop below 2 players, end the game
+        if (guessMode.players.size < 2 && guessMode.active) {
+            endGuessGame();
         }
-        io.to(recipients).emit('livestreamChatMessage', chatMessage);
+        
+        broadcastGuessLobby();
+    });
+
+    socket.on('guessPaint', (data) => {
+        if (!guessMode.players.has(socket.id) || guessMode.phase !== 'drawing') return;
+        
+        const guessPlayer = guessMode.players.get(socket.id);
+        if (!guessPlayer.isDrawer) return; // Only drawer can paint
+        
+        const { x, y, color } = data;
+        
+        // Update shared canvas
+        guessMode.canvas[y][x] = color;
+        
+        // Send update to all players in guess mode
+        io.to(Array.from(guessMode.players.keys())).emit('guessCanvasUpdate', { x, y, color });
+    });
+
+    socket.on('submitGuess', (data) => {
+        if (!guessMode.players.has(socket.id) || guessMode.phase !== 'drawing') return;
+        
+        const guessPlayer = guessMode.players.get(socket.id);
+        if (guessPlayer.isDrawer || guessPlayer.hasGuessed) return; // Drawer can't guess, and can't guess twice
+        
+        const { guess } = data;
+        const isCorrect = guess.toLowerCase().trim() === guessMode.currentWord.toLowerCase();
+        
+        if (isCorrect) {
+            // Mark player as having guessed correctly
+            guessPlayer.hasGuessed = true;
+            guessPlayer.guessTime = Date.now() - guessMode.drawingStartTime;
+            
+            // Add to correct guessers list
+            guessMode.correctGuessers.push({
+                playerId: socket.id,
+                playerName: guessPlayer.name,
+                guessTime: guessPlayer.guessTime
+            });
+            
+            // Notify all players
+            io.to(Array.from(guessMode.players.keys())).emit('guessSubmitted', {
+                playerName: guessPlayer.name,
+                guess: guess,
+                isCorrect: true
+            });
+            
+            // Check if all non-drawer players have guessed correctly
+            const nonDrawerPlayers = Array.from(guessMode.players.values()).filter(p => !p.isDrawer);
+            const allGuessed = nonDrawerPlayers.every(p => p.hasGuessed);
+            
+            if (allGuessed) {
+                // All players guessed correctly, end round early
+                endCurrentGuessRound();
+            }
+        } else {
+            // Wrong guess
+            io.to(Array.from(guessMode.players.keys())).emit('guessSubmitted', {
+                playerName: guessPlayer.name,
+                guess: guess,
+                isCorrect: false
+            });
+        }
     });
 
     socket.on('disconnect', () => {
@@ -900,24 +866,6 @@ io.on('connection', (socket) => {
             console.log(`User ${player.name} disconnected - their drawings have been cleared`);
         }
 
-        // Handle livestream disconnect
-        if (socket.isOwner && livestream.active) {
-            // Owner disconnected, end livestream
-            livestream.active = false;
-            livestream.ownerSocketId = null;
-            livestream.viewers.clear();
-            io.emit('livestreamEnded');
-            console.log('🎥 Livestream ended due to owner disconnect');
-        } else if (livestream.viewers.has(socket.id)) {
-            // Viewer disconnected
-            livestream.viewers.delete(socket.id);
-            const viewerUpdate = { viewerCount: livestream.viewers.size };
-            io.to(Array.from(livestream.viewers)).emit('livestreamViewerUpdate', viewerUpdate);
-            if (livestream.ownerSocketId) {
-                io.to(livestream.ownerSocketId).emit('livestreamViewerUpdate', viewerUpdate);
-            }
-        }
-
         // Handle challenge mode disconnect
         if (challengeMode.players.has(socket.id)) {
             challengeMode.players.delete(socket.id);
@@ -930,6 +878,24 @@ io.on('connection', (socket) => {
             }
             
             broadcastChallengeLobby();
+        }
+
+        // Handle guess mode disconnect
+        if (guessMode.players.has(socket.id)) {
+            const wasDrawer = guessMode.players.get(socket.id)?.isDrawer;
+            guessMode.players.delete(socket.id);
+            
+            // If the drawer left, end the current round
+            if (wasDrawer && guessMode.active) {
+                endCurrentGuessRound();
+            }
+            
+            // End guess game if too few players
+            if (guessMode.players.size < 2 && guessMode.active) {
+                endGuessGame();
+            }
+            
+            broadcastGuessLobby();
         }
     });
 });
@@ -1172,7 +1138,7 @@ function broadcastChallengeLobby() {
         }))
     };
 
-       if (challengeMode.phase === 'drawing') {
+    if (challengeMode.phase === 'drawing') {
         lobbyData.word = challengeMode.currentWord;
         lobbyData.timeLeft = getRemainingTime();
     }
@@ -1225,6 +1191,186 @@ function updateScores() {
     })).sort((a, b) => b.score - a.score);
     
     io.emit('scoreUpdate', scoreArray);
+}
+
+// Guess Mode Helper Functions
+function startGuessGame() {
+    guessMode.active = true;
+    guessMode.phase = 'waiting';
+    guessMode.roundNumber = 0;
+    guessMode.playerOrder = Array.from(guessMode.players.keys());
+    guessMode.currentPlayerIndex = 0;
+    
+    // Start first round
+    startNextGuessRound();
+}
+
+function startNextGuessRound() {
+    if (guessMode.players.size < 2) {
+        endGuessGame();
+        return;
+    }
+    
+    guessMode.roundNumber++;
+    guessMode.phase = 'drawing';
+    guessMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
+    guessMode.drawingStartTime = Date.now();
+    guessMode.correctGuessers = [];
+    
+    // Clear canvas for new round
+    guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    
+    // Reset all players
+    for (let player of guessMode.players.values()) {
+        player.isDrawer = false;
+        player.hasGuessed = false;
+        player.guessTime = null;
+    }
+    
+    // Set current drawer
+    if (guessMode.currentPlayerIndex >= guessMode.playerOrder.length) {
+        guessMode.currentPlayerIndex = 0;
+    }
+    
+    // Find next valid drawer (player still in game)
+    let attempts = 0;
+    while (attempts < guessMode.playerOrder.length) {
+        const currentPlayerId = guessMode.playerOrder[guessMode.currentPlayerIndex];
+        if (guessMode.players.has(currentPlayerId)) {
+            guessMode.currentDrawer = currentPlayerId;
+            guessMode.players.get(currentPlayerId).isDrawer = true;
+            break;
+        }
+        guessMode.currentPlayerIndex = (guessMode.currentPlayerIndex + 1) % guessMode.playerOrder.length;
+        attempts++;
+    }
+    
+    if (!guessMode.currentDrawer) {
+        endGuessGame();
+        return;
+    }
+    
+    // Start drawing timer
+    guessMode.timer = setTimeout(() => {
+        endCurrentGuessRound();
+    }, guessMode.drawingDuration);
+    
+    // Notify all players
+    const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+    for (let [playerId, player] of guessMode.players) {
+        if (player.isDrawer) {
+            // Notify drawer
+            io.to(playerId).emit('guessStarted', {
+                isDrawer: true,
+                word: guessMode.currentWord,
+                duration: guessMode.drawingDuration
+            });
+        } else {
+            // Notify guessers
+            io.to(playerId).emit('guessStarted', {
+                isDrawer: false,
+                drawerName: drawerPlayer.name,
+                duration: guessMode.drawingDuration
+            });
+        }
+    }
+    
+    broadcastGuessLobby();
+}
+
+function endCurrentGuessRound() {
+    if (guessMode.timer) {
+        clearTimeout(guessMode.timer);
+        guessMode.timer = null;
+    }
+    
+    guessMode.phase = 'results';
+    
+    // Create results data
+    const results = {
+        word: guessMode.currentWord,
+        drawerName: guessMode.players.get(guessMode.currentDrawer)?.name,
+        correctGuessers: guessMode.correctGuessers.sort((a, b) => a.guessTime - b.guessTime), // Fastest first
+        totalPlayers: guessMode.players.size - 1 // Exclude drawer
+    };
+    
+    // Notify all players of results
+    io.to(Array.from(guessMode.players.keys())).emit('guessResults', results);
+    
+    // Move to next drawer
+    guessMode.currentPlayerIndex = (guessMode.currentPlayerIndex + 1) % guessMode.playerOrder.length;
+    
+    // Auto-progress to next round after 8 seconds if 2+ players remain
+    guessMode.autoProgressTimer = setTimeout(() => {
+        if (guessMode.players.size >= 2) {
+            startNextGuessRound();
+        } else {
+            endGuessGame();
+        }
+    }, 8000);
+    
+    broadcastGuessLobby();
+}
+
+function endGuessGame() {
+    if (guessMode.timer) {
+        clearTimeout(guessMode.timer);
+        guessMode.timer = null;
+    }
+    
+    if (guessMode.autoProgressTimer) {
+        clearTimeout(guessMode.autoProgressTimer);
+        guessMode.autoProgressTimer = null;
+    }
+    
+    guessMode.active = false;
+    guessMode.phase = 'waiting';
+    guessMode.currentWord = '';
+    guessMode.currentDrawer = null;
+    guessMode.drawingStartTime = null;
+    guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    guessMode.roundNumber = 0;
+    guessMode.playerOrder = [];
+    guessMode.currentPlayerIndex = 0;
+    guessMode.correctGuessers = [];
+    
+    // Notify all remaining players
+    io.to(Array.from(guessMode.players.keys())).emit('guessEnded');
+    
+    broadcastGuessLobby();
+}
+
+function broadcastGuessLobby() {
+    const lobbyData = {
+        playerCount: guessMode.players.size,
+        phase: guessMode.phase,
+        active: guessMode.active,
+        players: Array.from(guessMode.players.values()).map(p => ({
+            name: p.name,
+            color: p.color,
+            isDrawer: p.isDrawer,
+            hasGuessed: p.hasGuessed
+        }))
+    };
+    
+    if (guessMode.phase === 'drawing' && guessMode.currentDrawer) {
+        const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+        lobbyData.drawerName = drawerPlayer?.name;
+        lobbyData.timeLeft = getGuessRemainingTime();
+        lobbyData.roundNumber = guessMode.roundNumber;
+    }
+    
+    // Send lobby update to all players in guess mode
+    const playerIds = Array.from(guessMode.players.keys());
+    if (playerIds.length > 0) {
+        io.to(playerIds).emit('guessLobbyUpdate', lobbyData);
+    }
+}
+
+function getGuessRemainingTime() {
+    if (!guessMode.drawingStartTime) return 0;
+    const elapsed = Date.now() - guessMode.drawingStartTime;
+    return Math.max(0, guessMode.drawingDuration - elapsed);
 }
 
 const PORT = process.env.PORT || 3000;
