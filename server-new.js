@@ -3,12 +3,7 @@ const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
     cors: {
-        origin: [
-            "http://localhost:3000",
-            "http://127.0.0.1:3000", 
-            "https://your-domain.netlify.app",
-            "https://your-custom-domain.com"
-        ],
+        origin: "*",
         methods: ["GET", "POST"],
         credentials: true
     }
@@ -184,7 +179,7 @@ const challengeWords = [
     "guitar", "piano", "drum", "microphone", "camera", "book", "pencil", "paintbrush"
 ];
 
-app.use(express.static(path.join(__dirname, '..')));
+app.use(express.static(path.join(__dirname)));
 
 // Debug endpoint to check rooms
 app.get('/debug/rooms', (req, res) => {
@@ -207,13 +202,17 @@ io.on('connection', (socket) => {
         socket.emit('banned', { reason: 'Your IP address has been banned for inappropriate behavior.' });
         socket.disconnect();
         return;
-    }    // Room management socket handlers
+    }
+
+    // Room management socket handlers
     socket.on('getRoomList', () => {
         console.log('📋 Client requested room list');
         const roomList = getRoomList();
         console.log('📋 Sending room list:', roomList.length, 'rooms');
         socket.emit('roomList', roomList);
-    });    socket.on('createRoom', (data) => {
+    });
+
+    socket.on('createRoom', (data) => {
         console.log('🏗️ Client creating room:', data);
         const { name, description, type, code, creator } = data;
         
@@ -248,7 +247,9 @@ io.on('connection', (socket) => {
             console.error('❌ Failed to create room:', error);
             socket.emit('roomError', { message: 'Failed to create room' });
         }
-    });    socket.on('joinRoom', (data) => {
+    });
+
+    socket.on('joinRoom', (data) => {
         console.log('🚪 Client joining room:', data);
         const { roomId, playerName, playerColor, roomCode } = data;
         
