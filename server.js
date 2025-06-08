@@ -49,7 +49,180 @@ function saveBans() {
     }
 }
 
+// Room Configuration
+const ROOM_TYPES = {
+    MAIN: 'main',
+    OVERFLOW: 'overflow'
+};
+
+const MAX_PLAYERS_PER_ROOM = 50;
 const GRID_SIZE = 100;
+
+// Room Management
+class RoomManager {
+    constructor() {
+        this.rooms = new Map();
+        this.playerRooms = new Map(); // playerId -> roomId
+        
+        // Create main rooms
+        this.createRoom('main', ROOM_TYPES.MAIN, 'Main Room');
+        this.createRoom('main-2', ROOM_TYPES.MAIN, 'Main Room 2');
+        this.createRoom('main-3', ROOM_TYPES.MAIN, 'Main Room 3');
+    }
+
+    createRoom(roomId, type = ROOM_TYPES.OVERFLOW, displayName = null) {
+        return {
+            id: roomId,
+            type: type,
+            displayName: displayName || `Room ${roomId}`,
+            players: new Map(),
+            scores: new Map(),
+            gameBoard: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            pixelOwners: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            challengeMode: {
+                active: false,
+                players: new Map(),
+                currentWord: '',
+                startTime: null,
+                duration: 180000,
+                phase: 'waiting',
+                submissions: new Map(),
+                votes: new Map(),
+                results: [],
+                timer: null,
+                votingOrder: [],
+                currentVotingIndex: 0,
+                currentSubmissionVotes: new Map(),
+                votingTimer: 15000
+            },
+            createdAt: Date.now(),
+            lastActivity: Date.now()
+        };
+    }
+
+    joinRoom(playerId, playerName, playerColor, preferredRoomId = null) {
+        // If player is already in a room, leave it first
+        this.leaveRoom(playerId);
+        
+        let targetRoom = null;
+        
+        if (preferredRoomId && this.rooms.has(preferredRoomId)) {
+            const room = this.rooms.get(preferredRoomId);
+            if (room.players.size < MAX_PLAYERS_PER_ROOM) {
+                targetRoom = room;
+            }
+        }
+        
+        if (!targetRoom) {
+            // Find a room with space, prioritizing main rooms
+            for (let room of this.rooms.values()) {
+                if (room.players.size < MAX_PLAYERS_PER_ROOM) {
+                    if (room.type === ROOM_TYPES.MAIN) {
+                        targetRoom = room;
+                        break;
+                    }
+                    if (!targetRoom) {
+                        targetRoom = room;
+                    }
+                }
+            }
+        }
+        
+        if (!targetRoom) {
+            // Create overflow room
+            const overflowId = `overflow-${Date.now()}`;
+            const newRoom = this.createRoom(overflowId, ROOM_TYPES.OVERFLOW);
+            this.rooms.set(overflowId, newRoom);
+            targetRoom = newRoom;
+        }
+        
+        // Add player to room
+        targetRoom.players.set(playerId, { name: playerName, color: playerColor });
+        targetRoom.scores.set(playerName, { score: 0, color: playerColor });
+        targetRoom.lastActivity = Date.now();
+        
+        this.playerRooms.set(playerId, targetRoom.id);
+        
+        console.log(`👥 Player ${playerName} joined room ${targetRoom.id} (${targetRoom.players.size}/${MAX_PLAYERS_PER_ROOM} players)`);
+        
+        return targetRoom;
+    }
+
+    leaveRoom(playerId) {
+        const currentRoomId = this.playerRooms.get(playerId);
+        if (currentRoomId && this.rooms.has(currentRoomId)) {
+            const room = this.rooms.get(currentRoomId);
+            const player = room.players.get(playerId);
+            
+            if (player) {
+                // Clear player's pixels
+                for (let y = 0; y < GRID_SIZE; y++) {
+                    for (let x = 0; x < GRID_SIZE; x++) {
+                        if (room.pixelOwners[y][x] === player.name) {
+                            room.gameBoard[y][x] = '';
+                            room.pixelOwners[y][x] = '';
+                        }
+                    }
+                }
+
+                room.players.delete(playerId);
+                room.scores.delete(player.name);
+                
+                // Remove from challenge mode if active
+                if (room.challengeMode.players.has(playerId)) {
+                    room.challengeMode.players.delete(playerId);
+                    room.challengeMode.votes.delete(playerId);
+                    room.challengeMode.submissions.delete(playerId);
+                }
+
+                console.log(`👋 Player ${player.name} left room ${currentRoomId} (${room.players.size} players remaining)`);
+                
+                // Clean up empty overflow rooms (keep main rooms)
+                if (room.players.size === 0 && room.type === ROOM_TYPES.OVERFLOW) {
+                    this.rooms.delete(currentRoomId);
+                    console.log(`🗑️ Deleted empty room: ${currentRoomId}`);
+                }
+            }
+        }
+        this.playerRooms.delete(playerId);
+    }
+
+    getPlayerRoom(playerId) {
+        const roomId = this.playerRooms.get(playerId);
+        return roomId ? this.rooms.get(roomId) : null;
+    }
+
+    getRoomList() {
+        return Array.from(this.rooms.values()).map(room => ({
+            id: room.id,
+            displayName: room.displayName,
+            playerCount: room.players.size,
+            maxPlayers: MAX_PLAYERS_PER_ROOM,
+            type: room.type,
+            isFull: room.players.size >= MAX_PLAYERS_PER_ROOM,
+            challengeActive: room.challengeMode.active
+        }));
+    }
+
+    broadcastToRoom(roomId, event, data, excludeSocketId = null) {
+        const room = this.rooms.get(roomId);
+        if (!room) return;
+
+        for (let [playerId, player] of room.players) {
+            if (playerId !== excludeSocketId) {
+                const socket = io.sockets.sockets.get(playerId);
+                if (socket) {
+                    socket.emit(event, data);
+                }
+            }
+        }
+    }
+}
+
+// Initialize room manager
+const roomManager = new RoomManager();
+
+// Legacy global variables (will be removed after room system is complete)
 let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
 let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
 let players = new Map();
