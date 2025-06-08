@@ -13,7 +13,8 @@ const fs = require('fs');
 // Create necessary directories
 const reportsDir = path.join(__dirname, 'reports');
 const bansDir = path.join(__dirname, 'bans');
-if (!fs.existsSync(reportsDir)) fs.mkdirSync(bansDir);
+if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir);
+if (!fs.existsSync(bansDir)) fs.mkdirSync(bansDir);
 
 // Load or initialize bans data
 let bans = {
@@ -50,10 +51,107 @@ function saveBans() {
 }
 
 const GRID_SIZE = 100;
-let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
-let players = new Map();
-let scores = new Map();
+
+// Room Management System
+let rooms = new Map();
+
+// Initialize default game rooms
+function initializeDefaultRooms() {
+    const defaultRooms = [
+        { id: 'canvas-1', name: 'Canvas Room 1', type: 'default', maxPlayers: 15 },
+        { id: 'canvas-2', name: 'Canvas Room 2', type: 'default', maxPlayers: 15 },
+        { id: 'canvas-3', name: 'Canvas Room 3', type: 'default', maxPlayers: 15 }
+    ];
+
+    defaultRooms.forEach(roomData => {
+        rooms.set(roomData.id, {
+            id: roomData.id,
+            name: roomData.name,
+            type: roomData.type,
+            maxPlayers: roomData.maxPlayers,
+            players: new Map(),
+            scores: new Map(),
+            gameBoard: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            pixelOwners: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            isPublic: true,
+            createdBy: 'system',
+            createdAt: Date.now(),
+            challengeMode: {
+                active: false,
+                players: new Map(),
+                currentWord: '',
+                startTime: null,
+                duration: 180000,
+                phase: 'waiting',
+                submissions: new Map(),
+                votes: new Map(),
+                results: [],
+                timer: null,
+                votingOrder: [],
+                currentVotingIndex: 0,
+                currentSubmissionVotes: new Map(),
+                votingTimer: 15000
+            }
+        });
+    });
+}
+
+// Initialize rooms on startup
+initializeDefaultRooms();
+
+// Room utility functions
+function generateRoomCode() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+}
+
+function getRoomById(roomId) {
+    return rooms.get(roomId);
+}
+
+function getPublicRooms() {
+    return Array.from(rooms.values())
+        .filter(room => room.isPublic)
+        .map(room => ({
+            id: room.id,
+            name: room.name,
+            type: room.type,
+            playerCount: room.players.size,
+            maxPlayers: room.maxPlayers,
+            isPublic: room.isPublic
+        }));
+}
+
+function updateRoomScores(roomId) {
+    const room = getRoomById(roomId);
+    if (!room) return;
+
+    const scoreArray = Array.from(room.scores.entries()).map(([name, data]) => ({
+        name,
+        score: data.score,
+        color: data.color
+    })).sort((a, b) => b.score - a.score);
+    
+    io.to(roomId).emit('scoreUpdate', scoreArray);
+}
+
+function updateRoomScore(roomId, playerName, points) {
+    const room = getRoomById(roomId);
+    if (!room) return;
+
+    const playerScore = room.scores.get(playerName);
+    if (playerScore) {
+        playerScore.score += points;
+        if (playerScore.score < 0) {
+            playerScore.score = 0;
+        }
+        updateRoomScores(roomId);
+    }
+}
 
 // Challenge Words List (1000+ words for drawing prompts)
 const challengeWords = [
@@ -319,31 +417,119 @@ io.on('connection', (socket) => {
         return;
     }
 
-    socket.on('join', (data) => {
-        const { name, color } = data;
-        console.log(`🎮 Player joining: ${name} with color ${color}`);
+    // Room Management Socket Events
+    socket.on('requestRoomList', () => {
+        socket.emit('roomListUpdate', getPublicRooms());
+    });
+
+    socket.on('createRoom', (data) => {
+        const { name, isPublic, maxPlayers, createdBy } = data;
+        
+        if (!name || name.trim().length === 0 || name.length > 30) {
+            socket.emit('roomCreateError', { message: 'Room name must be between 1 and 30 characters' });
+            return;
+        }
+
+        if (maxPlayers < 2 || maxPlayers > 15) {
+            socket.emit('roomCreateError', { message: 'Player limit must be between 2 and 15' });
+            return;
+        }
+
+        const roomId = `room-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const roomCode = isPublic ? null : generateRoomCode();
+
+        const newRoom = {
+            id: roomId,
+            name: name.trim(),
+            type: 'custom',
+            maxPlayers: maxPlayers,
+            players: new Map(),
+            scores: new Map(),
+            gameBoard: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            pixelOwners: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            isPublic: isPublic,
+            roomCode: roomCode,
+            createdBy: createdBy,
+            createdAt: Date.now(),
+            challengeMode: {
+                active: false,
+                players: new Map(),
+                currentWord: '',
+                startTime: null,
+                duration: 180000,
+                phase: 'waiting',
+                submissions: new Map(),
+                votes: new Map(),
+                results: [],
+                timer: null,
+                votingOrder: [],
+                currentVotingIndex: 0,
+                currentSubmissionVotes: new Map(),
+                votingTimer: 15000
+            }
+        };
+
+        rooms.set(roomId, newRoom);
+
+        socket.emit('roomCreated', {
+            roomId: roomId,
+            roomCode: roomCode,
+            roomName: name,
+            isPublic: isPublic
+        });
+
+        // Broadcast room list update to all clients
+        io.emit('roomListUpdate', getPublicRooms());
+        
+        console.log(`Room created: ${name} (${roomId}) by ${createdBy}, Public: ${isPublic}, Code: ${roomCode || 'N/A'}`);
+    });
+
+    socket.on('joinRoom', (data) => {
+        const { roomId, roomCode, playerName, playerColor } = data;
+        
+        if (!playerName || playerName.trim().length === 0) {
+            socket.emit('roomJoinError', { message: 'Please enter your name first' });
+            return;
+        }
+
+        const room = getRoomById(roomId);
+        if (!room) {
+            socket.emit('roomJoinError', { message: 'Room not found' });
+            return;
+        }
+
+        // Check room code for private rooms
+        if (!room.isPublic && room.roomCode !== roomCode) {
+            socket.emit('roomJoinError', { message: 'Invalid room code' });
+            return;
+        }
+
+        // Check if room is full
+        if (room.players.size >= room.maxPlayers) {
+            socket.emit('roomJoinError', { message: 'Room is full' });
+            return;
+        }
 
         // Check if name is banned
-        if (bans.names.has(name.toLowerCase())) {
+        if (bans.names.has(playerName.toLowerCase())) {
             socket.emit('banned', { reason: 'This username has been banned for inappropriate behavior.' });
             socket.disconnect();
             return;
         }
 
-        // Store user pattern data
+        // Check for pattern matching (repeated offenders)
         const userPattern = {
-            name: name.toLowerCase(),
-            color: color,
+            name: playerName.toLowerCase(),
+            color: playerColor,
             ip: socket.clientIp,
             joinTime: Date.now()
         };
 
-        // Check for pattern matching (repeated offenders)
         let patternMatch = false;
         bans.patterns.forEach((pattern, key) => {
-            if (pattern.color === color || 
-                pattern.name.toLowerCase().includes(name.toLowerCase()) ||
-                name.toLowerCase().includes(pattern.name.toLowerCase())) {
+            if (pattern.color === playerColor || 
+                pattern.name.toLowerCase().includes(playerName.toLowerCase()) ||
+                playerName.toLowerCase().includes(pattern.name.toLowerCase())) {
                 patternMatch = true;
             }
         });
@@ -354,80 +540,126 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Store the pattern for this connection
+        // Store user data
         socket.userPattern = userPattern;
+        socket.currentRoom = roomId;
 
-        players.set(socket.id, { name, color });
-        scores.set(name, { score: 0, color });
-        socket.emit('fullBoard', gameBoard);
-        updateScores();
-        io.emit('playerListUpdate', Array.from(players.values()));
+        // Add player to room
+        room.players.set(socket.id, { name: playerName, color: playerColor });
+        room.scores.set(playerName, { score: 0, color: playerColor });
+
+        // Join socket room
+        socket.join(roomId);
+
+        // Send room data to player
+        socket.emit('roomJoined', {
+            roomId: roomId,
+            roomName: room.name,
+            gameBoard: room.gameBoard
+        });
+
+        socket.emit('fullBoard', room.gameBoard);
+        updateRoomScores(roomId);
+        io.to(roomId).emit('playerListUpdate', Array.from(room.players.values()));
         
-        // Notify all players that someone joined
-        io.emit('playerJoined', { playerName: name });
+        // Notify room that someone joined
+        socket.to(roomId).emit('playerJoined', { playerName: playerName });
+
+        // Update room list for all clients
+        io.emit('roomListUpdate', getPublicRooms());
+
+        console.log(`${playerName} joined room: ${room.name} (${roomId})`);
     });
 
-    // Allow viewing the board without joining
-    socket.on('requestBoard', () => {
-        socket.emit('fullBoard', gameBoard);
+    socket.on('leaveRoom', () => {
+        if (socket.currentRoom) {
+            const room = getRoomById(socket.currentRoom);
+            if (room) {
+                const player = room.players.get(socket.id);
+                if (player) {
+                    // Remove player from room
+                    room.players.delete(socket.id);
+                    room.scores.delete(player.name);
+                    
+                    // Leave socket room
+                    socket.leave(socket.currentRoom);
+                    
+                    // Clear their pixels
+                    for (let y = 0; y < GRID_SIZE; y++) {
+                        for (let x = 0; x < GRID_SIZE; x++) {
+                            if (room.pixelOwners[y][x] === player.name) {
+                                room.gameBoard[y][x] = '';
+                                room.pixelOwners[y][x] = '';
+                                io.to(socket.currentRoom).emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
+                            }
+                        }
+                    }
+                    
+                    updateRoomScores(socket.currentRoom);
+                    io.to(socket.currentRoom).emit('playerListUpdate', Array.from(room.players.values()));
+                    socket.to(socket.currentRoom).emit('playerLeft', { playerName: player.name });
+                    
+                    // Delete custom rooms if empty
+                    if (room.type === 'custom' && room.players.size === 0) {
+                        rooms.delete(socket.currentRoom);
+                        console.log(`Deleted empty custom room: ${room.name}`);
+                    }
+                    
+                    // Update room list
+                    io.emit('roomListUpdate', getPublicRooms());
+                }
+            }
+            socket.currentRoom = null;
+        }
+        
+        socket.emit('roomLeft');
     });
 
-    // Allow requesting current scores without joining
-    socket.on('requestScores', () => {
-        updateScores();
-    });
-
+    // Modified existing socket events to work with rooms
     socket.on('paint', (data) => {
+        if (!socket.currentRoom) return;
+        
         const { x, y, color } = data;
-        const player = players.get(socket.id);
-        console.log(`🎨 Paint request: (${x},${y}) color:${color} by ${player ? player.name : 'unknown'}`);
-        if (!player) return;
+        const room = getRoomById(socket.currentRoom);
+        const player = room ? room.players.get(socket.id) : null;
+        
+        if (!room || !player) return;
 
-        const previousOwner = pixelOwners[y][x];
-        const currentPixelColor = gameBoard[y][x];
+        const previousOwner = room.pixelOwners[y][x];
+        const currentPixelColor = room.gameBoard[y][x];
         
         // Update the pixel
-        gameBoard[y][x] = color;
-        pixelOwners[y][x] = player.name;
+        room.gameBoard[y][x] = color;
+        room.pixelOwners[y][x] = player.name;
         
         // Handle scoring based on pixel ownership and whether it's an eraser action
         const isEraserAction = color === '#ffffff';
         
         if (isEraserAction) {
-            // Eraser logic: only deduct points if the pixel was the user's own color
             if (previousOwner === player.name && currentPixelColor !== '#ffffff' && currentPixelColor !== '') {
-                // User is erasing their own colored pixel - deduct 1 point
-                updateScore(player.name, -1);
-                console.log(`🧽 Eraser: ${player.name} lost 1 point for erasing own pixel`);
+                updateRoomScore(socket.currentRoom, player.name, -1);
             }
-            // No points gained or lost for erasing empty pixels or others' pixels
-            
-            // For eraser, don't assign ownership - set pixel owner to empty
-            pixelOwners[y][x] = '';
+            room.pixelOwners[y][x] = '';
         } else {
-            // Normal paint logic
             if (!previousOwner || previousOwner === '') {
-                // New pixel - player gains 1 point
-                updateScore(player.name, 1);
+                updateRoomScore(socket.currentRoom, player.name, 1);
             } else if (previousOwner !== player.name) {
-                // Taking over someone else's pixel - they lose 1, you gain 1
-                updateScore(previousOwner, -1);
-                updateScore(player.name, 1);
-                console.log(`📊 Score transfer: ${previousOwner} -1, ${player.name} +1`);
+                updateRoomScore(socket.currentRoom, previousOwner, -1);
+                updateRoomScore(socket.currentRoom, player.name, 1);
             }
-            // If painting over your own pixel, no score change
         }
         
-        io.emit('boardUpdate', { x, y, color, playerName: player.name });
+        io.to(socket.currentRoom).emit('boardUpdate', { x, y, color, playerName: player.name });
     });
 
-    // Handle cursor movement
     socket.on('cursorMove', (data) => {
-        const player = players.get(socket.id);
-        if (!player) return;
+        if (!socket.currentRoom) return;
         
-        // Broadcast cursor position to all other players
-        socket.broadcast.emit('cursorUpdate', {
+        const room = getRoomById(socket.currentRoom);
+        const player = room ? room.players.get(socket.id) : null;
+        if (!room || !player) return;
+        
+        socket.to(socket.currentRoom).emit('cursorUpdate', {
             x: data.x,
             y: data.y,
             gridX: data.gridX,
@@ -438,30 +670,38 @@ io.on('connection', (socket) => {
     });
 
     socket.on('clearMyPixels', (data) => {
+        if (!socket.currentRoom) return;
+        
+        const room = getRoomById(socket.currentRoom);
+        if (!room) return;
+        
         const { name } = data;
         for (let y = 0; y < GRID_SIZE; y++) {
             for (let x = 0; x < GRID_SIZE; x++) {
-                if (pixelOwners[y][x] === name) {
-                    gameBoard[y][x] = '';
-                    pixelOwners[y][x] = '';
-                    io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: name });
+                if (room.pixelOwners[y][x] === name) {
+                    room.gameBoard[y][x] = '';
+                    room.pixelOwners[y][x] = '';
+                    io.to(socket.currentRoom).emit('boardUpdate', { x, y, color: '#ffffff', playerName: name });
                 }
             }
         }
-        updateScores();
+        updateRoomScores(socket.currentRoom);
     });
 
-    // Clear entire canvas (admin/general clear)
     socket.on('clearCanvas', () => {
+        if (!socket.currentRoom) return;
+        
+        const room = getRoomById(socket.currentRoom);
+        if (!room) return;
+        
         for (let y = 0; y < GRID_SIZE; y++) {
             for (let x = 0; x < GRID_SIZE; x++) {
-                gameBoard[y][x] = '';
-                pixelOwners[y][x] = ''; // Also clear pixel ownership
+                room.gameBoard[y][x] = '';
+                room.pixelOwners[y][x] = '';
             }
         }
-        // Send the cleared board to all clients
-        io.emit('fullBoard', gameBoard);
-        updateScores();
+        io.to(socket.currentRoom).emit('fullBoard', room.gameBoard);
+        updateRoomScores(socket.currentRoom);
     });
 
     socket.on('submitReport', (reportData) => {
@@ -677,344 +917,44 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        const player = players.get(socket.id);
-        if (player) {
-            // Notify other players that this player disconnected (for cursor cleanup)
-            socket.broadcast.emit('playerDisconnected', { playerName: player.name });
-            
-            // Notify all players that someone left
-            io.emit('playerLeft', { playerName: player.name });
-            
-            // Clear all pixels drawn by this player
-            for (let y = 0; y < GRID_SIZE; y++) {
-                for (let x = 0; x < GRID_SIZE; x++) {
-                    if (pixelOwners[y][x] === player.name) {
-                        gameBoard[y][x] = '';
-                        pixelOwners[y][x] = '';
-                        // Notify all clients about the cleared pixel
-                        io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
+        if (socket.currentRoom) {
+            const room = getRoomById(socket.currentRoom);
+            if (room) {
+                const player = room.players.get(socket.id);
+                if (player) {
+                    // Notify other players in room
+                    socket.to(socket.currentRoom).emit('playerDisconnected', { playerName: player.name });
+                    socket.to(socket.currentRoom).emit('playerLeft', { playerName: player.name });
+                    
+                    // Clear their pixels
+                    for (let y = 0; y < GRID_SIZE; y++) {
+                        for (let x = 0; x < GRID_SIZE; x++) {
+                            if (room.pixelOwners[y][x] === player.name) {
+                                room.gameBoard[y][x] = '';
+                                room.pixelOwners[y][x] = '';
+                                io.to(socket.currentRoom).emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
+                            }
+                        }
                     }
+                    
+                    room.players.delete(socket.id);
+                    room.scores.delete(player.name);
+                    updateRoomScores(socket.currentRoom);
+                    io.to(socket.currentRoom).emit('playerListUpdate', Array.from(room.players.values()));
+                    
+                    // Delete custom rooms if empty
+                    if (room.type === 'custom' && room.players.size === 0) {
+                        rooms.delete(socket.currentRoom);
+                        console.log(`Deleted empty custom room: ${room.name}`);
+                    }
+                    
+                    // Update room list
+                    io.emit('roomListUpdate', getPublicRooms());
                 }
             }
-            
-            players.delete(socket.id);
-            scores.delete(player.name);
-            updateScores();
-            io.emit('playerListUpdate', Array.from(players.values()));
-            
-
-            
-            console.log(`User ${player.name} disconnected - their drawings have been cleared`);
-        }
-
-        // Handle challenge mode disconnect
-        if (challengeMode.players.has(socket.id)) {
-            challengeMode.players.delete(socket.id);
-            challengeMode.votes.delete(socket.id);
-            challengeMode.submissions.delete(socket.id);
-            
-            // End challenge if too few players
-            if (challengeMode.players.size < 2 && challengeMode.active) {
-                endChallenge();
-            }
-            
-            broadcastChallengeLobby();
         }
     });
 });
-
-// Challenge Mode Helper Functions
-function startChallenge() {
-    challengeMode.active = true;
-    challengeMode.phase = 'drawing';
-    challengeMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
-    challengeMode.startTime = Date.now();
-    challengeMode.submissions.clear();
-    challengeMode.votes.clear();
-    challengeMode.results = [];
-
-    // Reset all player submission status and move waiting players into the round
-    for (let player of challengeMode.players.values()) {
-        player.submitted = false;
-        player.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-        player.waiting = false; // Move waiting players into the active round
-    }
-
-    // Start drawing timer
-    challengeMode.timer = setTimeout(() => {
-        startVoting();
-    }, challengeMode.duration);
-
-    // Notify all challenge players
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeStarted', {
-        word: challengeMode.currentWord,
-        duration: challengeMode.duration
-    });
-
-    broadcastChallengeLobby();
-}
-
-function startVoting() {
-    if (challengeMode.timer) {
-        clearTimeout(challengeMode.timer);
-        challengeMode.timer = null;
-    }
-
-    challengeMode.phase = 'voting';
-    challengeMode.votes.clear();
-    challengeMode.currentSubmissionVotes.clear();
-    challengeMode.currentVotingIndex = 0;
-
-    // Prepare voting order (shuffle submissions for fairness)
-    challengeMode.votingOrder = Array.from(challengeMode.submissions.keys());
-    // Shuffle the array
-    for (let i = challengeMode.votingOrder.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [challengeMode.votingOrder[i], challengeMode.votingOrder[j]] = [challengeMode.votingOrder[j], challengeMode.votingOrder[i]];
-    }
-
-    if (challengeMode.votingOrder.length === 0) {
-        // No submissions, skip to results
-        showResults();
-        return;
-    }
-
-    // Start voting on first submission
-    startVotingOnCurrentSubmission();
-}
-
-function startVotingOnCurrentSubmission() {
-    if (challengeMode.currentVotingIndex >= challengeMode.votingOrder.length) {
-        // All submissions voted on, show results
-        showResults();
-        return;
-    }
-
-    challengeMode.currentSubmissionVotes.clear();
-    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
-    const currentPlayer = challengeMode.players.get(currentPlayerId);
-    const currentSubmission = challengeMode.submissions.get(currentPlayerId);
-
-    if (!currentPlayer || !currentSubmission) {
-        // Skip to next submission if data is missing
-        challengeMode.currentVotingIndex++;
-        startVotingOnCurrentSubmission();
-        return;
-    }
-
-    // Notify all players about current submission to vote on
-    for (let playerId of challengeMode.players.keys()) {
-        const isOwnSubmission = playerId === currentPlayerId;
-        io.to(playerId).emit('votingOnSubmission', {
-            word: challengeMode.currentWord,
-            submission: {
-                playerId: currentPlayerId,
-                playerName: currentPlayer.name,
-                canvas: currentSubmission
-            },
-            isOwnSubmission: isOwnSubmission,
-            currentIndex: challengeMode.currentVotingIndex + 1,
-            totalSubmissions: challengeMode.votingOrder.length,
-            timeLeft: challengeMode.votingTimer
-        });
-    }
-
-    // Start timer for this submission
-    challengeMode.timer = setTimeout(() => {
-        finishVotingOnCurrentSubmission();
-    }, challengeMode.votingTimer);
-
-    broadcastChallengeLobby();
-}
-
-function finishVotingOnCurrentSubmission() {
-    // Store votes for current submission
-    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
-    
-    // Calculate average rating for current submission
-    let totalRating = 0;
-    let voteCount = 0;
-    
-    for (let [voterId, rating] of challengeMode.currentSubmissionVotes) {
-        totalRating += rating;
-        voteCount++;
-        // Also store in main votes map for final results
-        challengeMode.votes.set(`${voterId}-${currentPlayerId}`, { targetId: currentPlayerId, rating });
-    }
-
-    // Move to next submission
-    challengeMode.currentVotingIndex++;
-    
-    // Small delay before next submission
-    setTimeout(() => {
-        startVotingOnCurrentSubmission();
-    }, 1000);
-}
-
-function showResults() {
-    if (challengeMode.timer) {
-        clearTimeout(challengeMode.timer);
-        challengeMode.timer = null;
-    }
-
-    challengeMode.phase = 'results';
-
-    // Calculate results
-    const playerScores = new Map();
-    
-    // Initialize scores for all players
-    for (let playerId of challengeMode.players.keys()) {
-        playerScores.set(playerId, { totalRating: 0, voteCount: 0, averageRating: 0 });
-    }
-
-    // Calculate average ratings
-    for (let vote of challengeMode.votes.values()) {
-        const targetScore = playerScores.get(vote.targetId);
-        if (targetScore) {
-            targetScore.totalRating += vote.rating;
-            targetScore.voteCount++;
-        }
-    }
-
-    // Calculate averages and create results array
-    challengeMode.results = [];
-    for (let [playerId, scoreData] of playerScores) {
-        const player = challengeMode.players.get(playerId);
-        if (player && challengeMode.submissions.has(playerId)) {
-            scoreData.averageRating = scoreData.voteCount > 0 ? scoreData.totalRating / scoreData.voteCount : 0;
-            challengeMode.results.push({
-                playerId,
-                playerName: player.name,
-                canvas: challengeMode.submissions.get(playerId),
-                averageRating: Math.round(scoreData.averageRating * 100) / 100,
-                voteCount: scoreData.voteCount
-            });
-        }
-    }
-
-    // Sort by average rating (highest first)
-    challengeMode.results.sort((a, b) => b.averageRating - a.averageRating);
-
-    // Track challenge winner (if there are results and a clear winner)
-    if (challengeMode.results.length > 0) {
-        const winner = challengeMode.results[0];
-        if (winner.voteCount > 0) { // Only count as winner if they received votes
-            // Winner determined - could add future winner tracking here
-        }
-    }
-
-    // Notify all players of results
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeResults', {
-        word: challengeMode.currentWord,
-        results: challengeMode.results
-    });
-
-    // Show results for 10 seconds, then restart if enough players
-    challengeMode.timer = setTimeout(() => {
-        if (challengeMode.players.size >= 2) {
-            startChallenge();
-        } else {
-            endChallenge();
-        }
-    }, 10000);
-
-    broadcastChallengeLobby();
-}
-
-function endChallenge() {
-    if (challengeMode.timer) {
-        clearTimeout(challengeMode.timer);
-        challengeMode.timer = null;
-    }
-
-    challengeMode.active = false;
-    challengeMode.phase = 'waiting';
-    challengeMode.currentWord = '';
-    challengeMode.startTime = null;
-    challengeMode.submissions.clear();
-    challengeMode.votes.clear();
-    challengeMode.results = [];
-    challengeMode.votingOrder = [];
-    challengeMode.currentVotingIndex = 0;
-    challengeMode.currentSubmissionVotes.clear();
-
-    // Notify all remaining players
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeEnded');
-
-    broadcastChallengeLobby();
-}
-
-function broadcastChallengeLobby() {
-    const activePlayers = Array.from(challengeMode.players.values()).filter(p => !p.waiting);
-    const waitingPlayers = Array.from(challengeMode.players.values()).filter(p => p.waiting);
-    
-    const lobbyData = {
-        playerCount: challengeMode.players.size,
-        activePlayerCount: activePlayers.length,
-        waitingPlayerCount: waitingPlayers.length,
-        phase: challengeMode.phase,
-        active: challengeMode.active,
-        players: activePlayers.map(p => ({
-            name: p.name,
-            color: p.color,
-            submitted: p.submitted
-        }))
-    };
-
-    if (challengeMode.phase === 'drawing') {
-        lobbyData.word = challengeMode.currentWord;
-        lobbyData.timeLeft = getRemainingTime();
-    }
-
-    // Send regular lobby update to active players
-    const activePlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
-        !challengeMode.players.get(id).waiting
-    );
-    if (activePlayerIds.length > 0) {
-        io.to(activePlayerIds).emit('challengeLobbyUpdate', lobbyData);
-    }
-
-    // Send waiting update to waiting players
-    const waitingPlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
-        challengeMode.players.get(id).waiting
-    );
-    if (waitingPlayerIds.length > 0) {
-        io.to(waitingPlayerIds).emit('waitingLobbyUpdate', {
-            phase: challengeMode.phase,
-            activePlayerCount: activePlayers.length,
-            timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
-        });
-    }
-}
-
-function getRemainingTime() {
-    if (!challengeMode.startTime) return 0;
-    const elapsed = Date.now() - challengeMode.startTime;
-    return Math.max(0, challengeMode.duration - elapsed);
-}
-
-function updateScore(playerName, points) {
-    const playerScore = scores.get(playerName);
-    if (playerScore) {
-        playerScore.score += points;
-        // Ensure score doesn't go below 0
-        if (playerScore.score < 0) {
-            playerScore.score = 0;
-        }
-        
-        updateScores();
-    }
-}
-
-function updateScores() {
-    const scoreArray = Array.from(scores.entries()).map(([name, data]) => ({
-        name,
-        score: data.score,
-        color: data.color
-    })).sort((a, b) => b.score - a.score);
-    
-    io.emit('scoreUpdate', scoreArray);
-}
 
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
