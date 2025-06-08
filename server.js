@@ -51,10 +51,93 @@ function saveBans() {
 }
 
 const GRID_SIZE = 100;
-let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
-let players = new Map();
-let scores = new Map();
+
+// Room Management System
+const rooms = new Map();
+const ROOM_CLEANUP_INTERVAL = 300000; // 5 minutes
+
+// Remove old global game state - now handled per room
+// The following global variables are replaced by room-specific state:
+// - gameBoard, pixelOwners, players, scores
+// - challengeMode, guessMode
+
+// Room data structure
+function createRoom(roomId) {
+    return {
+        id: roomId,
+        gameBoard: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+        pixelOwners: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+        players: new Map(),
+        scores: new Map(),
+        lastActivity: Date.now(),
+        challengeMode: {
+            active: false,
+            phase: 'waiting',
+            currentWord: '',
+            players: new Map(),
+            submissions: new Map(),
+            votes: new Map(),
+            currentSubmissionVotes: new Map(),
+            votingOrder: [],
+            currentVotingIndex: 0,
+            results: [],
+            timer: null,
+            startTime: null,
+            duration: 120000
+        },
+        guessMode: {
+            active: false,
+            currentWord: '',
+            currentDrawer: null,
+            drawingStartTime: null,
+            drawingDuration: 120000,
+            canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            phase: 'waiting',
+            roundNumber: 0,
+            playerOrder: [],
+            currentPlayerIndex: 0,
+            correctGuessers: [],
+            timer: null,
+            autoProgressTimer: null,
+            players: new Map()
+        }
+    };
+}
+
+// Generate random room code
+function generateRoomCode() {
+    return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+// Get or create room
+function getOrCreateRoom(roomId) {
+    if (!roomId) {
+        roomId = 'main'; // Default room
+    }
+    
+    if (!rooms.has(roomId)) {
+        rooms.set(roomId, createRoom(roomId));
+        console.log(`📦 Created room: ${roomId}`);
+    }
+    
+    const room = rooms.get(roomId);
+    room.lastActivity = Date.now();
+    return room;
+}
+
+// Clean up empty rooms
+function cleanupEmptyRooms() {
+    const now = Date.now();
+    for (const [roomId, room] of rooms.entries()) {
+        if (roomId !== 'main' && room.players.size === 0 && (now - room.lastActivity) > ROOM_CLEANUP_INTERVAL) {
+            rooms.delete(roomId);
+            console.log(`🗑️ Cleaned up empty room: ${roomId}`);
+        }
+    }
+}
+
+// Clean up empty rooms every 5 minutes
+setInterval(cleanupEmptyRooms, ROOM_CLEANUP_INTERVAL);
 
 // Challenge Words List (1000+ words for drawing prompts)
 const challengeWords = [
@@ -286,41 +369,7 @@ const challengeWords = [
 "labyrinth", "path", "spiritual", "journey", "meditation", "center", "ancient", "walking", "peaceful", "symbolic"
 ];
 
-let challengeMode = {
-    active: false,
-    players: new Map(), // playerId -> {name, color, canvas: Array, submitted: boolean}
-    currentWord: '',
-    startTime: null,
-    duration: 180000, // 3 minutes in milliseconds
-    phase: 'waiting', // 'waiting', 'drawing', 'voting', 'results'
-    submissions: new Map(), // playerId -> canvas data
-    votes: new Map(), // voterId -> {targetId, rating}
-    results: [],
-    timer: null,
-    // New voting system properties
-    votingOrder: [], // Array of playerIds in voting order
-    currentVotingIndex: 0, // Current submission being voted on
-    currentSubmissionVotes: new Map(), // voterId -> rating for current submission
-    votingTimer: 15000 // 15 seconds per submission
-};
-
-// Guess Mode Data
-let guessMode = {
-    active: false,
-    players: new Map(), // playerId -> {name, color, isDrawer: boolean, hasGuessed: boolean, guessTime: number}
-    currentWord: '',
-    currentDrawer: null, // playerId of current drawer
-    drawingStartTime: null,
-    drawingDuration: 120000, // 2 minutes per drawing
-    canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')), // Shared canvas for current drawing
-    phase: 'waiting', // 'waiting', 'drawing', 'results'
-    roundNumber: 0,
-    playerOrder: [], // Array of playerIds for turn rotation
-    currentPlayerIndex: 0,
-    correctGuessers: [], // Array of {playerId, playerName, guessTime}
-    timer: null,
-    autoProgressTimer: null
-};
+// Legacy global variables removed - now handled per room in room.challengeMode and room.guessMode
 
 app.use(express.static(path.join(__dirname)));
 
@@ -338,9 +387,55 @@ io.on('connection', (socket) => {
         return;
     }
 
+    // Room management handlers
+    socket.on('createRoom', (data) => {
+        const { customName, isPrivate } = data;
+        const roomId = customName || generateRoomCode();
+        const roomName = customName || `Room ${roomId}`;
+        
+        // Create the room
+        const room = getOrCreateRoom(roomId);
+        
+        // Join the socket to the room
+        socket.join(roomId);
+        socket.currentRoomId = roomId;
+        
+        socket.emit('roomCreated', { roomId, roomName });
+        console.log(`🏠 Room created: ${roomId} (${roomName})`);
+    });
+
+    socket.on('joinRoom', (data) => {
+        const { roomId } = data;
+        
+        if (!roomId) {
+            socket.emit('roomError', { message: 'Invalid room code' });
+            return;
+        }
+        
+        const room = getOrCreateRoom(roomId);
+        
+        // Leave current room if in one
+        if (socket.currentRoomId) {
+            socket.leave(socket.currentRoomId);
+        }
+        
+        // Join new room
+        socket.join(roomId);
+        socket.currentRoomId = roomId;
+        
+        const roomName = roomId === 'main' ? 'Main' : `Room ${roomId}`;
+        socket.emit('roomJoined', { roomId, roomName });
+        
+        // Send current room state
+        socket.emit('fullBoard', room.gameBoard);
+        socket.emit('roomPlayerCount', { count: room.players.size });
+        
+        console.log(`🔗 User joined room: ${roomId}`);
+    });
+
     socket.on('join', (data) => {
-        const { name, color } = data;
-        console.log(`🎮 Player joining: ${name} with color ${color}`);
+        const { name, color, roomId } = data;
+        console.log(`🎮 Player joining: ${name} with color ${color} in room ${roomId || 'main'}`);
 
         // Check if name is banned
         if (bans.names.has(name.toLowerCase())) {
@@ -376,33 +471,55 @@ io.on('connection', (socket) => {
         // Store the pattern for this connection
         socket.userPattern = userPattern;
 
-        players.set(socket.id, { name, color });
-        scores.set(name, { score: 0, color });
-        socket.emit('fullBoard', gameBoard);
-        updateScores();
-        io.emit('playerListUpdate', Array.from(players.values()));
+        // Get or create room
+        const currentRoomId = roomId || socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
         
-        // Notify all players that someone joined
-        io.emit('playerJoined', { playerName: name });
+        // Join socket to room if not already
+        if (socket.currentRoomId !== currentRoomId) {
+            if (socket.currentRoomId) {
+                socket.leave(socket.currentRoomId);
+            }
+            socket.join(currentRoomId);
+            socket.currentRoomId = currentRoomId;
+        }
+
+        // Add player to room
+        room.players.set(socket.id, { name, color });
+        room.scores.set(name, { score: 0, color });
+        
+        // Send room-specific data
+        socket.emit('fullBoard', room.gameBoard);
+        updateRoomScores(currentRoomId);
+        io.to(currentRoomId).emit('playerListUpdate', Array.from(room.players.values()));
+        io.to(currentRoomId).emit('roomPlayerCount', { count: room.players.size });
+        
+        // Notify room players that someone joined
+        socket.to(currentRoomId).emit('playerJoined', { playerName: name });
     });
 
     // Allow viewing the board without joining
     socket.on('requestBoard', () => {
-        socket.emit('fullBoard', gameBoard);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        socket.emit('fullBoard', room.gameBoard);
     });
 
     // Allow requesting current scores without joining
     socket.on('requestScores', () => {
-        updateScores();
+        const currentRoomId = socket.currentRoomId || 'main';
+        updateRoomScores(currentRoomId);
     });
 
     socket.on('paint', (data) => {
         const { x, y, color } = data;
-        const player = players.get(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        const player = room.players.get(socket.id);
         if (!player) return;
 
-        const previousOwner = pixelOwners[y][x];
-        const currentPixelColor = gameBoard[y][x];
+        const previousOwner = room.pixelOwners[y][x];
+        const currentPixelColor = room.gameBoard[y][x];
         
         // Handle eraser action
         const isEraserAction = color === '#ffffff';
@@ -411,40 +528,42 @@ io.on('connection', (socket) => {
             // Eraser logic: only allow erasing your own pixels
             if (previousOwner === player.name && currentPixelColor !== '#ffffff' && currentPixelColor !== '') {
                 // User is erasing their own colored pixel - deduct 1 point and clear pixel
-                gameBoard[y][x] = '';
-                pixelOwners[y][x] = '';
-                updateScore(player.name, -1);
+                room.gameBoard[y][x] = '';
+                room.pixelOwners[y][x] = '';
+                updateRoomScore(currentRoomId, player.name, -1);
                 console.log(`🧽 Eraser: ${player.name} lost 1 point for erasing own pixel`);
-                io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: player.name });
+                io.to(currentRoomId).emit('boardUpdate', { x, y, color: '#ffffff', playerName: player.name });
             }
             // If trying to erase empty pixel or someone else's pixel, do nothing
             return;
         } else {
             // Normal paint logic
-            gameBoard[y][x] = color;
-            pixelOwners[y][x] = player.name;
+            room.gameBoard[y][x] = color;
+            room.pixelOwners[y][x] = player.name;
             
             if (!previousOwner || previousOwner === '') {
                 // New pixel - player gains 1 point
-                updateScore(player.name, 1);
+                updateRoomScore(currentRoomId, player.name, 1);
             } else if (previousOwner !== player.name) {
                 // Taking over someone else's pixel - they lose 1, you gain 1
-                updateScore(previousOwner, -1);
-                updateScore(player.name, 1);
+                updateRoomScore(currentRoomId, previousOwner, -1);
+                updateRoomScore(currentRoomId, player.name, 1);
             }
             // If painting over your own pixel, no score change
             
-            io.emit('boardUpdate', { x, y, color, playerName: player.name });
+            io.to(currentRoomId).emit('boardUpdate', { x, y, color, playerName: player.name });
         }
     });
 
     // Handle cursor movement
     socket.on('cursorMove', (data) => {
-        const player = players.get(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        const player = room.players.get(socket.id);
         if (!player) return;
         
-        // Broadcast cursor position to all other players
-        socket.broadcast.emit('cursorUpdate', {
+        // Broadcast cursor position to all other players in the same room
+        socket.to(currentRoomId).emit('cursorUpdate', {
             x: data.x,
             y: data.y,
             gridX: data.gridX,
@@ -560,84 +679,93 @@ io.on('connection', (socket) => {
 
     // Challenge Mode Handlers
     socket.on('joinChallenge', () => {
-        const player = players.get(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        const player = room.players.get(socket.id);
         if (!player) return;
 
-        // Add player to challenge mode regardless of phase
-        challengeMode.players.set(socket.id, {
+        // Add player to room's challenge mode regardless of phase
+        room.challengeMode.players.set(socket.id, {
             name: player.name,
             color: player.color,
             canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
             submitted: false,
-            waiting: challengeMode.active && challengeMode.phase !== 'waiting' // Mark as waiting if round is active
+            waiting: room.challengeMode.active && room.challengeMode.phase !== 'waiting' // Mark as waiting if round is active
         });
 
-
-
         // Send appropriate response based on current phase
-        if (challengeMode.active && challengeMode.phase !== 'waiting') {
+        if (room.challengeMode.active && room.challengeMode.phase !== 'waiting') {
             // Player joins during active round - put them in waiting state
             socket.emit('challengeWaiting', { 
-                phase: challengeMode.phase,
-                playerCount: Array.from(challengeMode.players.values()).filter(p => !p.waiting).length,
-                timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+                phase: room.challengeMode.phase,
+                playerCount: Array.from(room.challengeMode.players.values()).filter(p => !p.waiting).length,
+                timeLeft: room.challengeMode.phase === 'drawing' ? getRoomRemainingTime(currentRoomId) : null
             });
         } else {
             // Normal join
             socket.emit('challengeJoined', { 
-                phase: challengeMode.phase,
-                word: challengeMode.phase === 'drawing' ? challengeMode.currentWord : null,
-                timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+                phase: room.challengeMode.phase,
+                word: room.challengeMode.phase === 'drawing' ? room.challengeMode.currentWord : null,
+                timeLeft: room.challengeMode.phase === 'drawing' ? getRoomRemainingTime(currentRoomId) : null
             });
         }
 
         // Start challenge if we have 2+ players and not already active
-        if (challengeMode.players.size >= 2 && !challengeMode.active) {
-            startChallenge();
+        if (room.challengeMode.players.size >= 2 && !room.challengeMode.active) {
+            startRoomChallenge(currentRoomId);
         }
 
         // Send updated challenge lobby
-        broadcastChallengeLobby();
+        broadcastRoomChallengeLobby(currentRoomId);
     });
 
     socket.on('requestChallengeStatus', () => {
-        // Send current challenge status to requesting player (even if they're not in challenge mode)
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        
+        // Send current room's challenge status to requesting player
         const lobbyData = {
-            playerCount: challengeMode.players.size,
-            phase: challengeMode.phase,
-            active: challengeMode.active,
-            players: Array.from(challengeMode.players.values()).map(p => ({
+            playerCount: room.challengeMode.players.size,
+            phase: room.challengeMode.phase,
+            active: room.challengeMode.active,
+            players: Array.from(room.challengeMode.players.values()).map(p => ({
                 name: p.name,
                 color: p.color,
                 submitted: p.submitted
             }))
         };
 
-        if (challengeMode.phase === 'drawing') {
-            lobbyData.word = challengeMode.currentWord;
-            lobbyData.timeLeft = getRemainingTime();
+        if (room.challengeMode.phase === 'drawing') {
+            lobbyData.word = room.challengeMode.currentWord;
+            lobbyData.timeLeft = getRoomRemainingTime(currentRoomId);
         }
 
         socket.emit('challengeLobbyUpdate', lobbyData);
     });
 
     socket.on('leaveChallenge', () => {
-        challengeMode.players.delete(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        
+        room.challengeMode.players.delete(socket.id);
         
         // If we drop below 2 players during voting or results, end the challenge
-        if (challengeMode.players.size < 2 && challengeMode.active && 
-            (challengeMode.phase === 'voting' || challengeMode.phase === 'results')) {
-            endChallenge();
+        if (room.challengeMode.players.size < 2 && room.challengeMode.active && 
+            (room.challengeMode.phase === 'voting' || room.challengeMode.phase === 'results')) {
+            endRoomChallenge(currentRoomId);
         }
         
-        broadcastChallengeLobby();
+        broadcastRoomChallengeLobby(currentRoomId);
     });
 
     socket.on('challengePaint', (data) => {
-        if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'drawing') return;
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        
+        if (!room.challengeMode.players.has(socket.id) || room.challengeMode.phase !== 'drawing') return;
         
         const { x, y, color } = data;
-        const challengePlayer = challengeMode.players.get(socket.id);
+        const challengePlayer = room.challengeMode.players.get(socket.id);
         
         // Update player's personal canvas
         challengePlayer.canvas[y][x] = color;
@@ -647,28 +775,32 @@ io.on('connection', (socket) => {
     });
 
     socket.on('submitChallengeDrawing', () => {
-        if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'drawing') return;
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
         
-        const challengePlayer = challengeMode.players.get(socket.id);
+        if (!room.challengeMode.players.has(socket.id) || room.challengeMode.phase !== 'drawing') return;
+        
+        const challengePlayer = room.challengeMode.players.get(socket.id);
         challengePlayer.submitted = true;
-        challengeMode.submissions.set(socket.id, challengePlayer.canvas);
-        
-
+        room.challengeMode.submissions.set(socket.id, challengePlayer.canvas);
         
         socket.emit('drawingSubmitted');
         
         // Check if all players have submitted
-        const allSubmitted = Array.from(challengeMode.players.values()).every(p => p.submitted);
+        const allSubmitted = Array.from(room.challengeMode.players.values()).every(p => p.submitted);
         if (allSubmitted) {
-            startVoting();
+            startRoomVoting(currentRoomId);
         }
     });
 
     socket.on('voteChallenge', (data) => {
-        if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'voting') return;
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        
+        if (!room.challengeMode.players.has(socket.id) || room.challengeMode.phase !== 'voting') return;
         
         const { rating } = data;
-        const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
+        const currentPlayerId = room.challengeMode.votingOrder[room.challengeMode.currentVotingIndex];
         
         // Don't allow voting for yourself
         if (currentPlayerId === socket.id) return;
@@ -697,11 +829,13 @@ io.on('connection', (socket) => {
 
     // Guess Mode Handlers
     socket.on('joinGuess', () => {
-        const player = players.get(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        const player = room.players.get(socket.id);
         if (!player) return;
 
-        // Add player to guess mode
-        guessMode.players.set(socket.id, {
+        // Add player to room's guess mode
+        room.guessMode.players.set(socket.id, {
             name: player.name,
             color: player.color,
             isDrawer: false,
@@ -710,37 +844,40 @@ io.on('connection', (socket) => {
         });
 
         // Send appropriate response based on current phase
-        if (guessMode.active && guessMode.phase !== 'waiting') {
+        if (room.guessMode.active && room.guessMode.phase !== 'waiting') {
             // Player joins during active round - put them in waiting state
             socket.emit('guessWaiting', { 
-                phase: guessMode.phase,
-                drawerName: guessMode.currentDrawer ? guessMode.players.get(guessMode.currentDrawer)?.name : null,
-                playerCount: guessMode.players.size - 1, // Exclude current drawer
-                timeLeft: guessMode.phase === 'drawing' ? getGuessRemainingTime() : null
+                phase: room.guessMode.phase,
+                drawerName: room.guessMode.currentDrawer ? room.guessMode.players.get(room.guessMode.currentDrawer)?.name : null,
+                playerCount: room.guessMode.players.size - 1, // Exclude current drawer
+                timeLeft: room.guessMode.phase === 'drawing' ? getRoomGuessRemainingTime(currentRoomId) : null
             });
         } else {
             // Normal join
             socket.emit('guessJoined', { 
-                phase: guessMode.phase
+                phase: room.guessMode.phase
             });
         }
 
         // Start guess game if we have 2+ players and not already active
-        if (guessMode.players.size >= 2 && !guessMode.active) {
-            startGuessGame();
+        if (room.guessMode.players.size >= 2 && !room.guessMode.active) {
+            startRoomGuessGame(currentRoomId);
         }
 
         // Send updated guess lobby
-        broadcastGuessLobby();
+        broadcastRoomGuessLobby(currentRoomId);
     });
 
     socket.on('requestGuessStatus', () => {
-        // Send current guess status to requesting player
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        
+        // Send current room's guess status to requesting player
         const lobbyData = {
-            playerCount: guessMode.players.size,
-            phase: guessMode.phase,
-            active: guessMode.active,
-            players: Array.from(guessMode.players.values()).map(p => ({
+            playerCount: room.guessMode.players.size,
+            phase: room.guessMode.phase,
+            active: room.guessMode.active,
+            players: Array.from(room.guessMode.players.values()).map(p => ({
                 name: p.name,
                 color: p.color,
                 isDrawer: p.isDrawer,
@@ -748,70 +885,79 @@ io.on('connection', (socket) => {
             }))
         };
 
-        if (guessMode.phase === 'drawing' && guessMode.currentDrawer) {
-            const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+        if (room.guessMode.phase === 'drawing' && room.guessMode.currentDrawer) {
+            const drawerPlayer = room.guessMode.players.get(room.guessMode.currentDrawer);
             lobbyData.drawerName = drawerPlayer?.name;
-            lobbyData.timeLeft = getGuessRemainingTime();
+            lobbyData.timeLeft = getRoomGuessRemainingTime(currentRoomId);
         }
 
         socket.emit('guessLobbyUpdate', lobbyData);
     });
 
     socket.on('leaveGuess', () => {
-        const wasDrawer = guessMode.players.get(socket.id)?.isDrawer;
-        guessMode.players.delete(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        
+        const wasDrawer = room.guessMode.players.get(socket.id)?.isDrawer;
+        room.guessMode.players.delete(socket.id);
         
         // If the drawer left, end the current round
-        if (wasDrawer && guessMode.active) {
-            endCurrentGuessRound();
+        if (wasDrawer && room.guessMode.active) {
+            endCurrentRoomGuessRound(currentRoomId);
         }
         
         // If we drop below 2 players, end the game
-        if (guessMode.players.size < 2 && guessMode.active) {
-            endGuessGame();
+        if (room.guessMode.players.size < 2 && room.guessMode.active) {
+            endRoomGuessGame(currentRoomId);
         }
         
-        broadcastGuessLobby();
+        broadcastRoomGuessLobby(currentRoomId);
     });
 
     socket.on('guessPaint', (data) => {
-        if (!guessMode.players.has(socket.id) || guessMode.phase !== 'drawing') return;
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
         
-        const guessPlayer = guessMode.players.get(socket.id);
+        if (!room.guessMode.players.has(socket.id) || room.guessMode.phase !== 'drawing') return;
+        
+        const guessPlayer = room.guessMode.players.get(socket.id);
         if (!guessPlayer.isDrawer) return; // Only drawer can paint
         
         const { x, y, color } = data;
         
         // Update shared canvas
-        guessMode.canvas[y][x] = color;
+        room.guessMode.canvas[y][x] = color;
         
-        // Send update to all players in guess mode
-        io.to(Array.from(guessMode.players.keys())).emit('guessCanvasUpdate', { x, y, color });
+        // Send update to all players in guess mode in this room
+        io.to(Array.from(room.guessMode.players.keys())).emit('guessCanvasUpdate', { x, y, color });
     });
 
     socket.on('submitGuess', (data) => {
-        if (!guessMode.players.has(socket.id) || guessMode.phase !== 'drawing') return;
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
         
-        const guessPlayer = guessMode.players.get(socket.id);
+        if (!room.guessMode.players.has(socket.id) || room.guessMode.phase !== 'drawing') return;
+        
+        const guessPlayer = room.guessMode.players.get(socket.id);
         if (guessPlayer.isDrawer || guessPlayer.hasGuessed) return; // Drawer can't guess, and can't guess twice
         
         const { guess } = data;
-        const isCorrect = guess.toLowerCase().trim() === guessMode.currentWord.toLowerCase();
+        const isCorrect = guess.toLowerCase().trim() === room.guessMode.currentWord.toLowerCase();
         
         if (isCorrect) {
             // Mark player as having guessed correctly
             guessPlayer.hasGuessed = true;
-            guessPlayer.guessTime = Date.now() - guessMode.drawingStartTime;
+            guessPlayer.guessTime = Date.now() - room.guessMode.drawingStartTime;
             
             // Add to correct guessers list
-            guessMode.correctGuessers.push({
+            room.guessMode.correctGuessers.push({
                 playerId: socket.id,
                 playerName: guessPlayer.name,
                 guessTime: guessPlayer.guessTime
             });
             
-            // Notify all players
-            io.to(Array.from(guessMode.players.keys())).emit('guessSubmitted', {
+            // Notify all players in this room
+            io.to(Array.from(room.guessMode.players.keys())).emit('guessSubmitted', {
                 playerName: guessPlayer.name,
                 guess: guess,
                 isCorrect: true
@@ -836,338 +982,97 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        const player = players.get(socket.id);
+        const currentRoomId = socket.currentRoomId || 'main';
+        const room = getOrCreateRoom(currentRoomId);
+        const player = room.players.get(socket.id);
+        
         if (player) {
-            // Notify other players that this player disconnected (for cursor cleanup)
-            socket.broadcast.emit('playerDisconnected', { playerName: player.name });
+            // Notify other players in the room that this player disconnected (for cursor cleanup)
+            socket.to(currentRoomId).emit('playerDisconnected', { playerName: player.name });
             
-            // Notify all players that someone left
-            io.emit('playerLeft', { playerName: player.name });
+            // Notify all players in the room that someone left
+            io.to(currentRoomId).emit('playerLeft', { playerName: player.name });
             
-            // Clear all pixels drawn by this player
+            // Clear all pixels drawn by this player in this room
             for (let y = 0; y < GRID_SIZE; y++) {
                 for (let x = 0; x < GRID_SIZE; x++) {
-                    if (pixelOwners[y][x] === player.name) {
-                        gameBoard[y][x] = '';
-                        pixelOwners[y][x] = '';
-                        // Notify all clients about the cleared pixel
-                        io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
+                    if (room.pixelOwners[y][x] === player.name) {
+                        room.gameBoard[y][x] = '';
+                        room.pixelOwners[y][x] = '';
+                        // Notify all clients in the room about the cleared pixel
+                        io.to(currentRoomId).emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
                     }
                 }
             }
             
-            players.delete(socket.id);
-            scores.delete(player.name);
-            updateScores();
-            io.emit('playerListUpdate', Array.from(players.values()));
+            // Remove player from room
+            room.players.delete(socket.id);
+            room.scores.delete(player.name);
+            updateRoomScores(currentRoomId);
+            io.to(currentRoomId).emit('playerListUpdate', Array.from(room.players.values()));
+            io.to(currentRoomId).emit('roomPlayerCount', { count: room.players.size });
             
-
-            
-            console.log(`User ${player.name} disconnected - their drawings have been cleared`);
+            console.log(`User ${player.name} disconnected from room ${currentRoomId} - their drawings have been cleared`);
         }
 
-        // Handle challenge mode disconnect
-        if (challengeMode.players.has(socket.id)) {
-            challengeMode.players.delete(socket.id);
-            challengeMode.votes.delete(socket.id);
-            challengeMode.submissions.delete(socket.id);
+        // Handle challenge mode disconnect in room
+        if (room.challengeMode.players.has(socket.id)) {
+            room.challengeMode.players.delete(socket.id);
+            room.challengeMode.votes.delete(socket.id);
+            room.challengeMode.submissions.delete(socket.id);
             
             // End challenge if too few players
-            if (challengeMode.players.size < 2 && challengeMode.active) {
-                endChallenge();
+            if (room.challengeMode.players.size < 2 && room.challengeMode.active) {
+                endRoomChallenge(currentRoomId);
             }
             
-            broadcastChallengeLobby();
+            broadcastRoomChallengeLobby(currentRoomId);
         }
 
-        // Handle guess mode disconnect
-        if (guessMode.players.has(socket.id)) {
-            const wasDrawer = guessMode.players.get(socket.id)?.isDrawer;
-            guessMode.players.delete(socket.id);
+        // Handle guess mode disconnect in room
+        if (room.guessMode.players.has(socket.id)) {
+            const wasDrawer = room.guessMode.players.get(socket.id)?.isDrawer;
+            room.guessMode.players.delete(socket.id);
             
             // If the drawer left, end the current round
-            if (wasDrawer && guessMode.active) {
-                endCurrentGuessRound();
+            if (wasDrawer && room.guessMode.active) {
+                endCurrentRoomGuessRound(currentRoomId);
             }
             
             // End guess game if too few players
-            if (guessMode.players.size < 2 && guessMode.active) {
-                endGuessGame();
+            if (room.guessMode.players.size < 2 && room.guessMode.active) {
+                endRoomGuessGame(currentRoomId);
             }
             
-            broadcastGuessLobby();
+            broadcastRoomGuessLobby(currentRoomId);
         }
     });
 });
 
-// Challenge Mode Helper Functions
-function startChallenge() {
-    challengeMode.active = true;
-    challengeMode.phase = 'drawing';
-    challengeMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
-    challengeMode.startTime = Date.now();
-    challengeMode.submissions.clear();
-    challengeMode.votes.clear();
-    challengeMode.results = [];
-
-    // Reset all player submission status and move waiting players into the round
-    for (let player of challengeMode.players.values()) {
-        player.submitted = false;
-        player.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-        player.waiting = false; // Move waiting players into the active round
-    }
-
-    // Start drawing timer
-    challengeMode.timer = setTimeout(() => {
-        startVoting();
-    }, challengeMode.duration);
-
-    // Notify all challenge players
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeStarted', {
-        word: challengeMode.currentWord,
-        duration: challengeMode.duration
-    });
-
-    broadcastChallengeLobby();
-}
-
-function startVoting() {
-    if (challengeMode.timer) {
-        clearTimeout(challengeMode.timer);
-        challengeMode.timer = null;
-    }
-
-    challengeMode.phase = 'voting';
-    challengeMode.votes.clear();
-    challengeMode.currentSubmissionVotes.clear();
-    challengeMode.currentVotingIndex = 0;
-
-    // Prepare voting order (shuffle submissions for fairness)
-    challengeMode.votingOrder = Array.from(challengeMode.submissions.keys());
-    // Shuffle the array
-    for (let i = challengeMode.votingOrder.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [challengeMode.votingOrder[i], challengeMode.votingOrder[j]] = [challengeMode.votingOrder[j], challengeMode.votingOrder[i]];
-    }
-
-    if (challengeMode.votingOrder.length === 0) {
-        // No submissions, skip to results
-        showResults();
-        return;
-    }
-
-    // Start voting on first submission
-    startVotingOnCurrentSubmission();
-}
-
-function startVotingOnCurrentSubmission() {
-    if (challengeMode.currentVotingIndex >= challengeMode.votingOrder.length) {
-        // All submissions voted on, show results
-        showResults();
-        return;
-    }
-
-    challengeMode.currentSubmissionVotes.clear();
-    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
-    const currentPlayer = challengeMode.players.get(currentPlayerId);
-    const currentSubmission = challengeMode.submissions.get(currentPlayerId);
-
-    if (!currentPlayer || !currentSubmission) {
-        // Skip to next submission if data is missing
-        challengeMode.currentVotingIndex++;
-        startVotingOnCurrentSubmission();
-        return;
-    }
-
-    // Notify all players about current submission to vote on
-    for (let playerId of challengeMode.players.keys()) {
-        const isOwnSubmission = playerId === currentPlayerId;
-        io.to(playerId).emit('votingOnSubmission', {
-            word: challengeMode.currentWord,
-            submission: {
-                playerId: currentPlayerId,
-                playerName: currentPlayer.name,
-                canvas: currentSubmission
-            },
-            isOwnSubmission: isOwnSubmission,
-            currentIndex: challengeMode.currentVotingIndex + 1,
-            totalSubmissions: challengeMode.votingOrder.length,
-            timeLeft: challengeMode.votingTimer
-        });
-    }
-
-    // Start timer for this submission
-    challengeMode.timer = setTimeout(() => {
-        finishVotingOnCurrentSubmission();
-    }, challengeMode.votingTimer);
-
-    broadcastChallengeLobby();
-}
-
-function finishVotingOnCurrentSubmission() {
-    // Store votes for current submission
-    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
-    
-    // Calculate average rating for current submission
-    let totalRating = 0;
-    let voteCount = 0;
-    
-    for (let [voterId, rating] of challengeMode.currentSubmissionVotes) {
-        totalRating += rating;
-        voteCount++;
-        // Also store in main votes map for final results
-        challengeMode.votes.set(`${voterId}-${currentPlayerId}`, { targetId: currentPlayerId, rating });
-    }
-
-    // Move to next submission
-    challengeMode.currentVotingIndex++;
-    
-    // Small delay before next submission
-    setTimeout(() => {
-        startVotingOnCurrentSubmission();
-    }, 1000);
-}
-
-function showResults() {
-    if (challengeMode.timer) {
-        clearTimeout(challengeMode.timer);
-        challengeMode.timer = null;
-    }
-
-    challengeMode.phase = 'results';
-
-    // Calculate results
-    const playerScores = new Map();
-    
-    // Initialize scores for all players
-    for (let playerId of challengeMode.players.keys()) {
-        playerScores.set(playerId, { totalRating: 0, voteCount: 0, averageRating: 0 });
-    }
-
-    // Calculate average ratings
-    for (let vote of challengeMode.votes.values()) {
-        const targetScore = playerScores.get(vote.targetId);
-        if (targetScore) {
-            targetScore.totalRating += vote.rating;
-            targetScore.voteCount++;
+// Room-specific helper functions
+function updateRoomScore(roomId, playerName, points) {
+    const room = getOrCreateRoom(roomId);
+    const playerScore = room.scores.get(playerName);
+    if (playerScore) {
+        playerScore.score += points;
+        // Ensure score doesn't go below 0
+        if (playerScore.score < 0) {
+            playerScore.score = 0;
         }
+        
+        updateRoomScores(roomId);
     }
-
-    // Calculate averages and create results array
-    challengeMode.results = [];
-    for (let [playerId, scoreData] of playerScores) {
-        const player = challengeMode.players.get(playerId);
-        if (player && challengeMode.submissions.has(playerId)) {
-            scoreData.averageRating = scoreData.voteCount > 0 ? scoreData.totalRating / scoreData.voteCount : 0;
-            challengeMode.results.push({
-                playerId,
-                playerName: player.name,
-                canvas: challengeMode.submissions.get(playerId),
-                averageRating: Math.round(scoreData.averageRating * 100) / 100,
-                voteCount: scoreData.voteCount
-            });
-        }
-    }
-
-    // Sort by average rating (highest first)
-    challengeMode.results.sort((a, b) => b.averageRating - a.averageRating);
-
-    // Track challenge winner (if there are results and a clear winner)
-    if (challengeMode.results.length > 0) {
-        const winner = challengeMode.results[0];
-        if (winner.voteCount > 0) { // Only count as winner if they received votes
-            // Winner determined - could add future winner tracking here
-        }
-    }
-
-    // Notify all players of results
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeResults', {
-        word: challengeMode.currentWord,
-        results: challengeMode.results
-    });
-
-    // Show results for 10 seconds, then restart if enough players
-    challengeMode.timer = setTimeout(() => {
-        if (challengeMode.players.size >= 2) {
-            startChallenge();
-        } else {
-            endChallenge();
-        }
-    }, 10000);
-
-    broadcastChallengeLobby();
 }
 
-function endChallenge() {
-    if (challengeMode.timer) {
-        clearTimeout(challengeMode.timer);
-        challengeMode.timer = null;
-    }
-
-    challengeMode.active = false;
-    challengeMode.phase = 'waiting';
-    challengeMode.currentWord = '';
-    challengeMode.startTime = null;
-    challengeMode.submissions.clear();
-    challengeMode.votes.clear();
-    challengeMode.results = [];
-    challengeMode.votingOrder = [];
-    challengeMode.currentVotingIndex = 0;
-    challengeMode.currentSubmissionVotes.clear();
-
-    // Notify all remaining players
-    io.to(Array.from(challengeMode.players.keys())).emit('challengeEnded');
-
-    broadcastChallengeLobby();
-}
-
-function broadcastChallengeLobby() {
-    const activePlayers = Array.from(challengeMode.players.values()).filter(p => !p.waiting);
-    const waitingPlayers = Array.from(challengeMode.players.values()).filter(p => p.waiting);
+function updateRoomScores(roomId) {
+    const room = getOrCreateRoom(roomId);
+    const scoreArray = Array.from(room.scores.entries()).map(([name, data]) => ({
+        name,
+        score: data.score,
+        color: data.color
+    })).sort((a, b) => b.score - a.score);
     
-    const lobbyData = {
-        playerCount: challengeMode.players.size,
-        activePlayerCount: activePlayers.length,
-        waitingPlayerCount: waitingPlayers.length,
-        phase: challengeMode.phase,
-        active: challengeMode.active,
-        players: activePlayers.map(p => ({
-            name: p.name,
-            color: p.color,
-            submitted: p.submitted
-        }))
-    };
-
-    if (challengeMode.phase === 'drawing') {
-        lobbyData.word = challengeMode.currentWord;
-        lobbyData.timeLeft = getRemainingTime();
-    }
-
-    // Send regular lobby update to active players
-    const activePlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
-        !challengeMode.players.get(id).waiting
-    );
-    if (activePlayerIds.length > 0) {
-        io.to(activePlayerIds).emit('challengeLobbyUpdate', lobbyData);
-    }
-
-    // Send waiting update to waiting players
-    const waitingPlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
-        challengeMode.players.get(id).waiting
-    );
-    if (waitingPlayerIds.length > 0) {
-        io.to(waitingPlayerIds).emit('waitingLobbyUpdate', {
-            phase: challengeMode.phase,
-            activePlayerCount: activePlayers.length,
-            timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
-        });
-    }
-}
-
-function getRemainingTime() {
-    if (!challengeMode.startTime) return 0;
-    const elapsed = Date.now() - challengeMode.startTime;
-    return Math.max(0, challengeMode.duration - elapsed);
+    io.to(roomId).emit('scoreUpdate', scoreArray);
 }
 
 function updateScore(playerName, points) {
@@ -1193,193 +1098,332 @@ function updateScores() {
     io.emit('scoreUpdate', scoreArray);
 }
 
-// Guess Mode Helper Functions
-function startGuessGame() {
-    guessMode.active = true;
-    guessMode.phase = 'waiting';
-    guessMode.roundNumber = 0;
-    guessMode.playerOrder = Array.from(guessMode.players.keys());
-    guessMode.currentPlayerIndex = 0;
-    
-    // Start first round
-    startNextGuessRound();
+// Room-specific helper functions
+function getRoomRemainingTime(roomId) {
+    const room = getOrCreateRoom(roomId);
+    if (!room.challengeMode.startTime) return 0;
+    const elapsed = Date.now() - room.challengeMode.startTime;
+    return Math.max(0, room.challengeMode.duration - elapsed);
 }
 
-function startNextGuessRound() {
-    if (guessMode.players.size < 2) {
-        endGuessGame();
+function getRoomGuessRemainingTime(roomId) {
+    const room = getOrCreateRoom(roomId);
+    if (!room.guessMode.drawingStartTime) return 0;
+    const elapsed = Date.now() - room.guessMode.drawingStartTime;
+    return Math.max(0, room.guessMode.drawingDuration - elapsed);
+}
+
+function startRoomChallenge(roomId) {
+    const room = getOrCreateRoom(roomId);
+    room.challengeMode.active = true;
+    room.challengeMode.phase = 'drawing';
+    room.challengeMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
+    room.challengeMode.startTime = Date.now();
+    room.challengeMode.submissions.clear();
+    room.challengeMode.votes.clear();
+    room.challengeMode.results = [];
+
+    // Reset all player submission status and move waiting players into the round
+    for (let player of room.challengeMode.players.values()) {
+        player.submitted = false;
+        player.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+        player.waiting = false; // Move waiting players into the active round
+    }
+
+    // Start drawing timer
+    room.challengeMode.timer = setTimeout(() => {
+        startRoomVoting(roomId);
+    }, room.challengeMode.duration);
+
+    // Notify all challenge players in this room
+    io.to(Array.from(room.challengeMode.players.keys())).emit('challengeStarted', {
+        word: room.challengeMode.currentWord,
+        duration: room.challengeMode.duration
+    });
+
+    console.log(`🎨 Challenge started in room ${roomId}: "${room.challengeMode.currentWord}"`);
+}
+
+function startRoomVoting(roomId) {
+    const room = getOrCreateRoom(roomId);
+    room.challengeMode.phase = 'voting';
+    
+    // Clear the timer
+    if (room.challengeMode.timer) {
+        clearTimeout(room.challengeMode.timer);
+        room.challengeMode.timer = null;
+    }
+
+    // Create voting order from submissions
+    room.challengeMode.votingOrder = Array.from(room.challengeMode.submissions.keys());
+    room.challengeMode.currentVotingIndex = 0;
+    
+    // Start voting on first submission
+    nextRoomVote(roomId);
+}
+
+function nextRoomVote(roomId) {
+    const room = getOrCreateRoom(roomId);
+    
+    if (room.challengeMode.currentVotingIndex >= room.challengeMode.votingOrder.length) {
+        // All submissions have been voted on, calculate results
+        calculateRoomChallengeResults(roomId);
         return;
     }
+
+    const currentPlayerId = room.challengeMode.votingOrder[room.challengeMode.currentVotingIndex];
+    const currentPlayerName = room.challengeMode.players.get(currentPlayerId)?.name;
+    const currentSubmission = room.challengeMode.submissions.get(currentPlayerId);
+
+    // Clear previous votes for this submission
+    room.challengeMode.currentSubmissionVotes.clear();
+
+    // Send current submission to all players for voting
+    io.to(Array.from(room.challengeMode.players.keys())).emit('voteSubmission', {
+        playerName: currentPlayerName,
+        canvas: currentSubmission,
+        word: room.challengeMode.currentWord,
+        currentIndex: room.challengeMode.currentVotingIndex,
+        totalSubmissions: room.challengeMode.votingOrder.length
+    });
+
+    // Auto-advance after voting timer
+    setTimeout(() => {
+        room.challengeMode.currentVotingIndex++;
+        nextRoomVote(roomId);
+    }, room.challengeMode.votingTimer);
+}
+
+function calculateRoomChallengeResults(roomId) {
+    const room = getOrCreateRoom(roomId);
+    const results = [];
     
-    guessMode.roundNumber++;
-    guessMode.phase = 'drawing';
-    guessMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
-    guessMode.drawingStartTime = Date.now();
-    guessMode.correctGuessers = [];
+    // Calculate average ratings for each player
+    for (const [playerId, canvas] of room.challengeMode.submissions) {
+        const playerName = room.challengeMode.players.get(playerId)?.name;
+        const votes = Array.from(room.challengeMode.votes.values())
+            .filter(vote => vote.targetId === playerId)
+            .map(vote => vote.rating);
+        
+        const averageRating = votes.length > 0 ? votes.reduce((a, b) => a + b, 0) / votes.length : 0;
+        
+        results.push({
+            playerId,
+            playerName,
+            canvas,
+            averageRating: Math.round(averageRating * 10) / 10,
+            voteCount: votes.length
+        });
+    }
     
-    // Clear canvas for new round
-    guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    // Sort by rating (highest first)
+    results.sort((a, b) => b.averageRating - a.averageRating);
+    room.challengeMode.results = results;
+    room.challengeMode.phase = 'results';
     
-    // Reset all players
-    for (let player of guessMode.players.values()) {
+    // Send results to all players
+    io.to(Array.from(room.challengeMode.players.keys())).emit('challengeResults', {
+        results: results,
+        word: room.challengeMode.currentWord
+    });
+    
+    // Auto-restart after 30 seconds
+    setTimeout(() => {
+        startRoomChallenge(roomId);
+    }, 30000);
+}
+
+function endRoomChallenge(roomId) {
+    const room = getOrCreateRoom(roomId);
+    room.challengeMode.active = false;
+    room.challengeMode.phase = 'waiting';
+    room.challengeMode.currentWord = '';
+    room.challengeMode.startTime = null;
+    room.challengeMode.submissions.clear();
+    room.challengeMode.votes.clear();
+    room.challengeMode.results = [];
+    
+    if (room.challengeMode.timer) {
+        clearTimeout(room.challengeMode.timer);
+        room.challengeMode.timer = null;
+    }
+    
+    // Notify all players
+    io.to(Array.from(room.challengeMode.players.keys())).emit('challengeEnded');
+    broadcastRoomChallengeLobby(roomId);
+}
+
+function broadcastRoomChallengeLobby(roomId) {
+    const room = getOrCreateRoom(roomId);
+    const activePlayers = Array.from(room.challengeMode.players.values()).filter(p => !p.waiting);
+    
+    const lobbyData = {
+        playerCount: room.challengeMode.players.size,
+        phase: room.challengeMode.phase,
+        active: room.challengeMode.active,
+        players: Array.from(room.challengeMode.players.values()).map(p => ({
+            name: p.name,
+            color: p.color,
+            submitted: p.submitted
+        })),
+        activePlayerCount: activePlayers.length,
+        timeLeft: room.challengeMode.phase === 'drawing' ? getRoomRemainingTime(roomId) : null
+    };
+
+    io.to(Array.from(room.challengeMode.players.keys())).emit('challengeLobbyUpdate', lobbyData);
+}
+
+function startRoomGuessGame(roomId) {
+    const room = getOrCreateRoom(roomId);
+    room.guessMode.active = true;
+    room.guessMode.phase = 'waiting';
+    room.guessMode.roundNumber = 0;
+    room.guessMode.playerOrder = Array.from(room.guessMode.players.keys());
+    room.guessMode.currentPlayerIndex = 0;
+    
+    // Start first round
+    startNextRoomGuessRound(roomId);
+}
+
+function startNextRoomGuessRound(roomId) {
+    const room = getOrCreateRoom(roomId);
+    
+    if (room.guessMode.currentPlayerIndex >= room.guessMode.playerOrder.length) {
+        // All players have drawn, start new rotation
+        room.guessMode.currentPlayerIndex = 0;
+        room.guessMode.roundNumber++;
+    }
+    
+    // Reset game state for new round
+    room.guessMode.phase = 'drawing';
+    room.guessMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
+    room.guessMode.currentDrawer = room.guessMode.playerOrder[room.guessMode.currentPlayerIndex];
+    room.guessMode.drawingStartTime = Date.now();
+    room.guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    room.guessMode.correctGuessers = [];
+    
+    // Reset player states
+    for (let player of room.guessMode.players.values()) {
         player.isDrawer = false;
         player.hasGuessed = false;
         player.guessTime = null;
     }
     
     // Set current drawer
-    if (guessMode.currentPlayerIndex >= guessMode.playerOrder.length) {
-        guessMode.currentPlayerIndex = 0;
-    }
-    
-    // Find next valid drawer (player still in game)
-    let attempts = 0;
-    while (attempts < guessMode.playerOrder.length) {
-        const currentPlayerId = guessMode.playerOrder[guessMode.currentPlayerIndex];
-        if (guessMode.players.has(currentPlayerId)) {
-            guessMode.currentDrawer = currentPlayerId;
-            guessMode.players.get(currentPlayerId).isDrawer = true;
-            break;
-        }
-        guessMode.currentPlayerIndex = (guessMode.currentPlayerIndex + 1) % guessMode.playerOrder.length;
-        attempts++;
-    }
-    
-    if (!guessMode.currentDrawer) {
-        endGuessGame();
-        return;
+    const drawerPlayer = room.guessMode.players.get(room.guessMode.currentDrawer);
+    if (drawerPlayer) {
+        drawerPlayer.isDrawer = true;
     }
     
     // Start drawing timer
-    guessMode.timer = setTimeout(() => {
-        endCurrentGuessRound();
-    }, guessMode.drawingDuration);
+    room.guessMode.timer = setTimeout(() => {
+        endCurrentRoomGuessRound(roomId);
+    }, room.guessMode.drawingDuration);
     
     // Notify all players
-    const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
-    for (let [playerId, player] of guessMode.players) {
-        if (player.isDrawer) {
-            // Notify drawer
-            io.to(playerId).emit('guessStarted', {
-                isDrawer: true,
-                word: guessMode.currentWord,
-                duration: guessMode.drawingDuration
-            });
-        } else {
-            // Notify guessers
-            io.to(playerId).emit('guessStarted', {
-                isDrawer: false,
-                drawerName: drawerPlayer.name,
-                duration: guessMode.drawingDuration
-            });
+    io.to(Array.from(room.guessMode.players.keys())).emit('guessRoundStarted', {
+        drawerName: drawerPlayer?.name,
+        roundNumber: room.guessMode.roundNumber + 1,
+        word: drawerPlayer ? room.guessMode.currentWord : null, // Only send word to drawer
+        duration: room.guessMode.drawingDuration
+    });
+    
+    // Send word only to drawer
+    if (room.guessMode.currentDrawer) {
+        io.to(room.guessMode.currentDrawer).emit('guessWord', { word: room.guessMode.currentWord });
+    }
+}
+
+function endCurrentRoomGuessRound(roomId) {
+    const room = getOrCreateRoom(roomId);
+    
+    if (room.guessMode.timer) {
+        clearTimeout(room.guessMode.timer);
+        room.guessMode.timer = null;
+    }
+    
+    room.guessMode.phase = 'results';
+    
+    // Award points based on guess order and speed
+    const basePoints = 100;
+    room.guessMode.correctGuessers.forEach((guesser, index) => {
+        const timeBonus = Math.max(0, 50 - Math.floor(guesser.guessTime / 1000));
+        const orderBonus = Math.max(0, 30 - (index * 5));
+        const totalPoints = basePoints + timeBonus + orderBonus;
+        
+        updateRoomScore(roomId, guesser.playerName, totalPoints);
+    });
+    
+    // Award points to drawer if anyone guessed correctly
+    if (room.guessMode.correctGuessers.length > 0) {
+        const drawerPlayer = room.guessMode.players.get(room.guessMode.currentDrawer);
+        if (drawerPlayer) {
+            const drawerPoints = 50 + (room.guessMode.correctGuessers.length * 10);
+            updateRoomScore(roomId, drawerPlayer.name, drawerPoints);
         }
     }
     
-    broadcastGuessLobby();
+    // Send round results
+    io.to(Array.from(room.guessMode.players.keys())).emit('guessRoundEnded', {
+        correctWord: room.guessMode.currentWord,
+        correctGuessers: room.guessMode.correctGuessers,
+        drawerName: room.guessMode.players.get(room.guessMode.currentDrawer)?.name
+    });
+    
+    // Auto-progress to next round after 5 seconds
+    room.guessMode.autoProgressTimer = setTimeout(() => {
+        room.guessMode.currentPlayerIndex++;
+        startNextRoomGuessRound(roomId);
+    }, 5000);
 }
 
-function endCurrentGuessRound() {
-    if (guessMode.timer) {
-        clearTimeout(guessMode.timer);
-        guessMode.timer = null;
+function endRoomGuessGame(roomId) {
+    const room = getOrCreateRoom(roomId);
+    room.guessMode.active = false;
+    room.guessMode.phase = 'waiting';
+    room.guessMode.currentWord = '';
+    room.guessMode.currentDrawer = null;
+    room.guessMode.drawingStartTime = null;
+    room.guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    room.guessMode.correctGuessers = [];
+    
+    if (room.guessMode.timer) {
+        clearTimeout(room.guessMode.timer);
+        room.guessMode.timer = null;
     }
     
-    guessMode.phase = 'results';
+    if (room.guessMode.autoProgressTimer) {
+        clearTimeout(room.guessMode.autoProgressTimer);
+        room.guessMode.autoProgressTimer = null;
+    }
     
-    // Create results data
-    const results = {
-        word: guessMode.currentWord,
-        drawerName: guessMode.players.get(guessMode.currentDrawer)?.name,
-        correctGuessers: guessMode.correctGuessers.sort((a, b) => a.guessTime - b.guessTime), // Fastest first
-        totalPlayers: guessMode.players.size - 1 // Exclude drawer
-    };
-    
-    // Notify all players of results
-    io.to(Array.from(guessMode.players.keys())).emit('guessResults', results);
-    
-    // Move to next drawer
-    guessMode.currentPlayerIndex = (guessMode.currentPlayerIndex + 1) % guessMode.playerOrder.length;
-    
-    // Auto-progress to next round after 8 seconds if 2+ players remain
-    guessMode.autoProgressTimer = setTimeout(() => {
-        if (guessMode.players.size >= 2) {
-            // Set phase to waiting to allow new players to join
-            guessMode.phase = 'waiting';
-            broadcastGuessLobby();
-            
-            // Start next round after 15 seconds to give plenty of time for new players to join
-            setTimeout(() => {
-                if (guessMode.players.size >= 2) {
-                    startNextGuessRound();
-                } else {
-                    endGuessGame();
-                }
-            }, 15000);
-        } else {
-            endGuessGame();
-        }
-    }, 8000);
-    
-    broadcastGuessLobby();
+    // Notify all players
+    io.to(Array.from(room.guessMode.players.keys())).emit('guessGameEnded');
+    broadcastRoomGuessLobby(roomId);
 }
 
-function endGuessGame() {
-    if (guessMode.timer) {
-        clearTimeout(guessMode.timer);
-        guessMode.timer = null;
-    }
+function broadcastRoomGuessLobby(roomId) {
+    const room = getOrCreateRoom(roomId);
     
-    if (guessMode.autoProgressTimer) {
-        clearTimeout(guessMode.autoProgressTimer);
-        guessMode.autoProgressTimer = null;
-    }
-    
-    guessMode.active = false;
-    guessMode.phase = 'waiting';
-    guessMode.currentWord = '';
-    guessMode.currentDrawer = null;
-    guessMode.drawingStartTime = null;
-    guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
-    guessMode.roundNumber = 0;
-    guessMode.playerOrder = [];
-    guessMode.currentPlayerIndex = 0;
-    guessMode.correctGuessers = [];
-    
-    // Notify all remaining players
-    io.to(Array.from(guessMode.players.keys())).emit('guessEnded');
-    
-    broadcastGuessLobby();
-}
-
-function broadcastGuessLobby() {
     const lobbyData = {
-        playerCount: guessMode.players.size,
-        phase: guessMode.phase,
-        active: guessMode.active,
-        players: Array.from(guessMode.players.values()).map(p => ({
+        playerCount: room.guessMode.players.size,
+        phase: room.guessMode.phase,
+        active: room.guessMode.active,
+        players: Array.from(room.guessMode.players.values()).map(p => ({
             name: p.name,
             color: p.color,
             isDrawer: p.isDrawer,
             hasGuessed: p.hasGuessed
         }))
     };
-    
-    if (guessMode.phase === 'drawing' && guessMode.currentDrawer) {
-        const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
-        lobbyData.drawerName = drawerPlayer?.name;
-        lobbyData.timeLeft = getGuessRemainingTime();
-        lobbyData.roundNumber = guessMode.roundNumber;
-    }
-    
-    // Send lobby update to ALL connected players (not just those in guess mode)
-    // This ensures that players viewing the guess modal but not yet joined also get updates
-    io.emit('guessLobbyUpdate', lobbyData);
-}
 
-function getGuessRemainingTime() {
-    if (!guessMode.drawingStartTime) return 0;
-    const elapsed = Date.now() - guessMode.drawingStartTime;
-    return Math.max(0, guessMode.drawingDuration - elapsed);
+    if (room.guessMode.phase === 'drawing' && room.guessMode.currentDrawer) {
+        const drawerPlayer = room.guessMode.players.get(room.guessMode.currentDrawer);
+        lobbyData.drawerName = drawerPlayer?.name;
+        lobbyData.timeLeft = getRoomGuessRemainingTime(roomId);
+    }
+
+    io.to(Array.from(room.guessMode.players.keys())).emit('guessLobbyUpdate', lobbyData);
 }
 
 const PORT = process.env.PORT || 3000;
