@@ -51,7 +51,7 @@ function saveBans() {
 }
 
 const GRID_SIZE = 100;
-const MAX_ACTIVE_PLAYERS = 30; // Maximum number of players allowed on canvas at once
+const MAX_ACTIVE_PLAYERS = 2; // Maximum number of players allowed on canvas at once
 let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
 let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
 let players = new Map(); // Active players on canvas
