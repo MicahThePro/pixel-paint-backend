@@ -1303,18 +1303,18 @@ function endCurrentGuessRound() {
     // Auto-progress to next round after 8 seconds if 2+ players remain
     guessMode.autoProgressTimer = setTimeout(() => {
         if (guessMode.players.size >= 2) {
-            // Set phase to waiting briefly to allow new players to join
+            // Set phase to waiting to allow new players to join
             guessMode.phase = 'waiting';
             broadcastGuessLobby();
             
-            // Start next round after a short delay
+            // Start next round after 15 seconds to give plenty of time for new players to join
             setTimeout(() => {
                 if (guessMode.players.size >= 2) {
                     startNextGuessRound();
                 } else {
                     endGuessGame();
                 }
-            }, 2000);
+            }, 15000);
         } else {
             endGuessGame();
         }
