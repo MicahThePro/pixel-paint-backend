@@ -458,6 +458,8 @@ io.on('connection', (socket) => {
                 pixelOwners[y][x] = ''; // Also clear pixel ownership
             }
         }
+        // Reset all player scores to 0
+        scores.clear();
         // Send the cleared board to all clients
         io.emit('fullBoard', gameBoard);
         updateScores();
