@@ -1371,11 +1371,9 @@ function broadcastGuessLobby() {
         lobbyData.roundNumber = guessMode.roundNumber;
     }
     
-    // Send lobby update to all players in guess mode
-    const playerIds = Array.from(guessMode.players.keys());
-    if (playerIds.length > 0) {
-        io.to(playerIds).emit('guessLobbyUpdate', lobbyData);
-    }
+    // Send lobby update to ALL connected players (not just those in guess mode)
+    // This ensures that players viewing the guess modal but not yet joined also get updates
+    io.emit('guessLobbyUpdate', lobbyData);
 }
 
 function getGuessRemainingTime() {
