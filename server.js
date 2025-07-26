@@ -1,606 +1,1231 @@
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const path = require('path');
-const filter = require('leo-profanity');
-
+﻿const express = require('express');
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
+const http = require('http').createServer(app);
+const io = require('socket.io')(http, {
     cors: {
-        origin: [
-            "http://localhost:3000",
-            "http://localhost:5000",
-            "https://nord-chat.netlify.app", // Old Netlify URL
-            "https://micahswebsite.xyz", // Your custom domain
-            "http://micahswebsite.xyz"   // HTTP version (just in case)
-        ],
-        methods: ["GET", "POST"]
+origin: [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://pixel-paint-party.netlify.app",
+  "https://ppp-backend.onrender.com"
+],
+        methods: ["GET", "POST"],
+        credentials: true
     }
 });
+const path = require('path');
+const fs = require('fs');
 
-const PORT = process.env.PORT || 5000;
+// Create necessary directories
+const reportsDir = path.join(__dirname, 'reports');
+const bansDir = path.join(__dirname, 'bans');
+if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir);
+if (!fs.existsSync(bansDir)) fs.mkdirSync(bansDir);
 
-// Store messages and online users
-const messages = [];
-const maxMessages = 20;
-const onlineUsers = {};
+// Load or initialize bans data
+let bans = {
+    ips: new Set(),
+    names: new Set(),
+    patterns: new Map() // Store user patterns for detection
+};
 
-// Serve static files from current directory
-app.use(express.static(__dirname));
+// Load existing bans
+const bansFile = path.join(bansDir, 'bans.json');
+if (fs.existsSync(bansFile)) {
+    try {
+        const data = JSON.parse(fs.readFileSync(bansFile, 'utf8'));
+        bans.ips = new Set(data.ips || []);
+        bans.names = new Set(data.names || []);
+        bans.patterns = new Map(data.patterns || []);
+    } catch (error) {
+        console.error('Error loading bans file:', error);
+    }
+}
 
-// Routes
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
+// Save bans to file
+function saveBans() {
+    try {
+        const data = {
+            ips: Array.from(bans.ips),
+            names: Array.from(bans.names),
+            patterns: Array.from(bans.patterns)
+        };
+        fs.writeFileSync(bansFile, JSON.stringify(data, null, 2));
+    } catch (error) {
+        console.error('Error saving bans file:', error);
+    }
+}
 
-app.get('/room1', (req, res) => {
-    res.sendFile(path.join(__dirname, 'room1.html'));
-});
+const GRID_SIZE = 100;
+let gameBoard = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+let pixelOwners = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')); // Track who drew each pixel
+let players = new Map();
+let scores = new Map();
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Server is running' });
-});
+// Challenge Mode Data
+const challengeWords = [
+    "cat", "dog", "house", "tree", "car", "sun", "moon", "star", "flower", "bird",
+    "fish", "butterfly", "rainbow", "cloud", "mountain", "ocean", "apple", "banana",
+    "pizza", "cake", "robot", "rocket", "castle", "crown", "heart", "smile", "eye",
+    "dragon", "unicorn", "elephant", "lion", "tiger", "bear", "whale", "shark",
+    "guitar", "piano", "drum", "microphone", "camera", "book", "pencil", "paintbrush",
+    "umbrella", "balloon", "kite", "bicycle", "airplane", "boat", "train", "bus",
+    "shoe", "hat", "glasses", "watch", "ring", "key", "door", "window", "chair",
+    "table", "bed", "lamp", "clock", "phone", "computer", "television", "radio",
+    "fire", "ice", "lightning", "wind", "earth", "water", "forest", "desert",
+    "volcano", "island", "bridge", "tower", "pyramid", "statue", "fountain", "garden",
+    "playground", "school", "hospital", "library", "museum", "theater", "restaurant", "store",
+    "strawberry", "orange", "grape", "pineapple", "watermelon", "carrot", "broccoli", "corn",
+    "hamburger", "hotdog", "sandwich", "soup", "salad", "cookie", "donut", "ice cream",
+    "soccer ball", "basketball", "tennis ball", "baseball", "football", "golf ball", "bowling ball", "volleyball",
+    "sword", "shield", "bow", "arrow", "hammer", "wrench", "scissors", "knife",
+    "compass", "map", "treasure", "coin", "gem", "diamond", "pearl", "crystal",
+    "witch", "wizard", "knight", "princess", "king", "queen", "pirate", "ninja",
+    "ghost", "vampire", "zombie", "mummy", "skeleton", "spider", "bat", "owl",
+    "penguin", "polar bear", "seal", "walrus", "dolphin", "octopus", "jellyfish", "starfish",
+    "crab", "lobster", "shrimp", "seahorse", "turtle", "frog", "snake", "lizard",
+    "monkey", "gorilla", "panda", "koala", "kangaroo", "giraffe", "zebra", "hippo",
+    "rhino", "buffalo", "deer", "rabbit", "squirrel", "mouse", "hamster", "guinea pig",
+    "chicken", "duck", "goose", "turkey", "peacock", "flamingo", "parrot", "eagle",
+    "hawk", "crow", "robin", "sparrow", "hummingbird", "woodpecker", "pelican", "seagull",
+    "rose", "tulip", "daisy", "sunflower", "lily", "orchid", "cactus", "mushroom",
+    "cherry", "peach", "plum", "lemon", "lime", "coconut", "avocado", "tomato",
+    "potato", "onion", "garlic", "pepper", "cucumber", "lettuce", "spinach", "celery",
+    "bread", "cheese", "milk", "butter", "egg", "bacon", "chicken", "beef",
+    "pasta", "rice", "beans", "nuts", "honey", "sugar", "salt", "pepper",
+    "coffee", "tea", "juice", "soda", "water", "wine", "beer", "cocktail",
+    "fork", "spoon", "knife", "plate", "bowl", "cup", "glass", "bottle",
+    "pan", "pot", "oven", "stove", "refrigerator", "microwave", "toaster", "blender",
+    "vacuum", "broom", "mop", "bucket", "sponge", "towel", "soap", "shampoo",
+    "toothbrush", "toothpaste", "mirror", "comb", "brush", "razor", "perfume", "makeup",
+    "dress", "shirt", "pants", "skirt", "jacket", "coat", "sweater", "t-shirt",
+    "jeans", "shorts", "underwear", "socks", "stockings", "tie", "scarf", "gloves",
+    "boots", "sandals", "sneakers", "heels", "slippers", "flip-flops", "clogs", "moccasins",
+    "necklace", "bracelet", "earrings", "brooch", "pendant", "chain", "locket", "charm",
+    "backpack", "purse", "wallet", "suitcase", "briefcase", "handbag", "luggage", "duffel bag",
+    "tent", "sleeping bag", "backpack", "compass", "flashlight", "rope", "axe", "fishing rod",
+    "campfire", "marshmallow", "hot dog", "s'mores", "hiking boots", "canoe", "kayak", "paddle",
+    "anchor", "sail", "mast", "deck", "cabin", "port", "starboard", "bow",
+    "engine", "wheel", "tire", "brake", "gas", "oil", "battery", "headlight",
+    "windshield", "mirror", "horn", "seatbelt", "steering wheel", "dashboard", "trunk", "hood",
+    "runway", "cockpit", "wing", "propeller", "jet", "helicopter", "parachute", "landing gear",
+    "track", "platform", "station", "conductor", "passenger", "cargo", "locomotive", "caboose",
+    "saddle", "bridle", "horseshoe", "stable", "barn", "pasture", "fence", "gate",
+    "flower pot", "watering can", "shovel", "rake", "hoe", "pruners", "gloves", "wheelbarrow",
+    "nest", "egg", "feather", "wing", "beak", "claw", "tail", "fur",
+    "scale", "fin", "gill", "tentacle", "shell", "horn", "antler", "mane",
+    "telescope", "microscope", "calculator", "ruler", "eraser", "stapler", "paperclip", "rubber band",
+    "envelope", "stamp", "postcard", "letter", "package", "box", "tape", "string",
+    "candle", "match", "lighter", "flashlight", "lantern", "torch", "spotlight", "laser",
+    "battery", "charger", "cable", "plug", "socket", "switch", "button", "knob",
+    "thermometer", "scale", "timer", "alarm", "bell", "whistle", "siren", "horn",
+    "flag", "banner", "sign", "poster", "billboard", "label", "tag", "sticker",
+    "medal", "trophy", "ribbon", "certificate", "diploma", "degree", "award", "prize",
+    "game", "toy", "puzzle", "doll", "action figure", "board game", "card game", "video game",
+    "dice", "chess", "checkers", "backgammon", "monopoly", "scrabble", "uno", "poker",
+    "yo-yo", "kite", "frisbee", "ball", "jump rope", "hula hoop", "skateboard", "roller skates",
+    "swing", "slide", "seesaw", "monkey bars", "sandbox", "merry-go-round", "ferris wheel", "roller coaster",
+    "circus", "clown", "juggler", "acrobat", "tightrope", "trapeze", "lion tamer", "ringmaster",
+    "magic", "wand", "hat", "rabbit", "dove", "cards", "coin", "crystal ball",
+    "birthday", "party", "cake", "candles", "presents", "balloons", "confetti", "streamers",
+    "wedding", "bride", "groom", "ring", "bouquet", "veil", "tuxedo", "dress",
+    "christmas", "santa", "reindeer", "sleigh", "present", "tree", "ornament", "star",
+    "halloween", "pumpkin", "jack-o-lantern", "ghost", "witch", "vampire", "zombie", "candy",
+    "easter", "bunny", "egg", "basket", "carrot", "chocolate", "peeps", "lily",
+    "valentine", "heart", "cupid", "arrow", "rose", "chocolate", "card", "love",
+    "fireworks", "sparkler", "rocket", "explosion", "celebration", "parade", "festival", "carnival",
+    "beach", "sand", "waves", "seashell", "starfish", "crab", "lighthouse", "pier",
+    "winter", "snow", "snowman", "snowflake", "icicle", "sled", "skis", "ice skates",
+    "spring", "flower", "bud", "leaf", "rain", "puddle", "rainbow", "butterfly",
+    "summer", "sun", "beach", "swimming", "ice cream", "barbecue", "picnic", "vacation",
+    "autumn", "leaves", "acorn", "pumpkin", "harvest", "scarecrow", "haystack", "cornfield"
+];
 
-// Socket.IO connection handling
+let challengeMode = {
+    active: false,
+    players: new Map(), // playerId -> {name, color, canvas: Array, submitted: boolean}
+    currentWord: '',
+    startTime: null,
+    duration: 180000, // 3 minutes in milliseconds
+    phase: 'waiting', // 'waiting', 'drawing', 'voting', 'results'
+    submissions: new Map(), // playerId -> canvas data
+    votes: new Map(), // voterId -> {targetId, rating}
+    results: [],
+    timer: null,
+    // New voting system properties
+    votingOrder: [], // Array of playerIds in voting order
+    currentVotingIndex: 0, // Current submission being voted on
+    currentSubmissionVotes: new Map(), // voterId -> rating for current submission
+    votingTimer: 15000 // 15 seconds per submission
+};
+
+// Guess Mode Data
+let guessMode = {
+    active: false,
+    players: new Map(), // playerId -> {name, color, isDrawer: boolean, hasGuessed: boolean, guessTime: number}
+    currentWord: '',
+    currentDrawer: null, // playerId of current drawer
+    drawingStartTime: null,
+    drawingDuration: 120000, // 2 minutes per drawing
+    canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')), // Shared canvas for current drawing
+    phase: 'waiting', // 'waiting', 'drawing', 'results'
+    roundNumber: 0,
+    playerOrder: [], // Array of playerIds for turn rotation
+    currentPlayerIndex: 0,
+    correctGuessers: [], // Array of {playerId, playerName, guessTime}
+    timer: null,
+    autoProgressTimer: null
+};
+
+
+
+app.use(express.static(path.join(__dirname)));
+
 io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+    console.log('A user connected');
+    
+    // Get IP address (works with both direct connections and proxies)
+    const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+    socket.clientIp = clientIp;
 
-    // Handle user joining
+    // Check if IP is banned
+    if (bans.ips.has(clientIp)) {
+        socket.emit('banned', { reason: 'Your IP address has been banned for inappropriate behavior.' });
+        socket.disconnect();
+        return;
+    }
+
     socket.on('join', (data) => {
-        const { username } = data;
-        const userIP = socket.handshake.address;
-        
-        console.log(`User ${username} joined from IP: ${userIP}`);
-        
-        onlineUsers[username] = socket.id;
-        
-        // Broadcast user joined
-        io.emit('user joined', username);
-        
-        // Send last 20 messages to new user
-        socket.emit('load messages', messages);
-    });    // Handle new messages
-    socket.on('message', (msg) => {
-        const timestamp = new Date().toLocaleString();
-          // Check for profanity in the message
-        if (filter.check(msg.text)) {
-            // Send a message indicating profanity was attempted
-            const profanityMessage = {
-                username: "System",
-                text: `${msg.username} tried to send a swear word!`,
-                timestamp: timestamp
-            };
-            
-            // Store the profanity warning message
-            messages.push(profanityMessage);
-            if (messages.length > maxMessages) {
-                messages.shift();
+        const { name, color } = data;
+
+        // Check if name is banned
+        if (bans.names.has(name.toLowerCase())) {
+            socket.emit('banned', { reason: 'This username has been banned for inappropriate behavior.' });
+            socket.disconnect();
+            return;
+        }
+
+        // Store user pattern data
+        const userPattern = {
+            name: name.toLowerCase(),
+            color: color,
+            ip: socket.clientIp,
+            joinTime: Date.now()
+        };
+
+        // Check for pattern matching (repeated offenders)
+        let patternMatch = false;
+        bans.patterns.forEach((pattern, key) => {
+            if (pattern.color === color || 
+                pattern.name.toLowerCase().includes(name.toLowerCase()) ||
+                name.toLowerCase().includes(pattern.name.toLowerCase())) {
+                patternMatch = true;
             }
-            
-            console.log(`Profanity blocked from ${msg.username}: ${msg.text}`);
-            
-            // Broadcast the profanity warning to all users
-            io.emit('message', profanityMessage);
-            return; // Don't process the original message
+        });
+
+        if (patternMatch) {
+            socket.emit('banned', { reason: 'Your behavior pattern matches a banned user.' });
+            socket.disconnect();
+            return;
         }
+
+        // Store the pattern for this connection
+        socket.userPattern = userPattern;
+
+        players.set(socket.id, { name, color });
+        scores.set(name, { score: 0, color });
+        socket.emit('fullBoard', gameBoard);
+        updateScores();
+        io.emit('playerListUpdate', Array.from(players.values()));
         
-        const messageWithTimestamp = {
-            ...msg,
-            timestamp: timestamp
-        };
-        
-        // Store message (keep only last 20)
-        messages.push(messageWithTimestamp);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log(`Message from ${msg.username}: ${msg.text}`);
-        
-        // Broadcast message to all users
-        io.emit('message', messageWithTimestamp);
-    });// Handle 8-ball command
-    socket.on('8ball', (data) => {
-        const { question } = data;
-        const timestamp = new Date().toLocaleString();
-        
-        // Magic 8-Ball responses
-        const responses = [
-            "It is certain.",
-            "It is decidedly so.",
-            "Without a doubt.",
-            "Yes definitely.",
-            "You may rely on it.",
-            "As I see it, yes.",
-            "Most likely.",
-            "Outlook good.",
-            "Yes.",
-            "Signs point to yes.",
-            "Reply hazy, try again.",
-            "Ask again later.",
-            "Better not tell you now.",
-            "Cannot predict now.",
-            "Concentrate and ask again.",
-            "Don't count on it.",
-            "My reply is no.",
-            "My sources say no.",  
-            "Outlook not so good.",
-            "Very doubtful."
-        ];
-        
-        // Get random response
-        const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-        
-        // Create 8-Ball message
-        const eightBallMessage = {
-            username: "🎱 8-Ball",
-            text: `🔮 "${question}"\n\n${randomResponse}`,
-            timestamp: timestamp
-        };
-        
-        // Store message (keep only last 20)
-        messages.push(eightBallMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log(`8-Ball responded to: ${question}`);
-        
-        // Broadcast 8-Ball response to all users
-        io.emit('message', eightBallMessage);
+        // Notify all players that someone joined
+        io.emit('playerJoined', { playerName: name });
     });
 
-    // Handle joke command
-    socket.on('joke', () => {
-        const timestamp = new Date().toLocaleString();
-        
-        // Massive list of jokes
-        const jokes = [
-            "Why don't scientists trust atoms? Because they make up everything!",
-            "I told my wife she was drawing her eyebrows too high. She looked surprised.",
-            "Why did the scarecrow win an award? He was outstanding in his field!",
-            "I haven't slept for ten days, because that would be too long.",
-            "Want to hear a joke about construction? I'm still working on it.",
-            "Why don't skeletons fight each other? They don't have the guts.",
-            "I used to hate facial hair, but then it grew on me.",
-            "What do you call a fake noodle? An impasta!",
-            "How do you organize a space party? You planet!",
-            "Why did the math book look so sad? Because it had too many problems!",
-            "What's the best thing about Switzerland? I don't know, but the flag is a big plus.",
-            "I invented a new word: Plagiarism!",
-            "Why did the coffee file a police report? It got mugged!",
-            "What do you call a bear with no teeth? A gummy bear!",
-            "Why don't eggs tell jokes? They'd crack each other up!",
-            "What do you call a dinosaur that crashes his car? Tyrannosaurus Wrecks!",
-            "I'm reading a book about anti-gravity. It's impossible to put down!",
-            "Why did the bicycle fall over? Because it was two tired!",
-            "What do you call a sleeping bull? A bulldozer!",
-            "Why don't programmers like nature? It has too many bugs.",
-            "How does a penguin build its house? Igloos it together!",
-            "What did one wall say to the other wall? I'll meet you at the corner!",
-            "Why did the banana go to the doctor? It wasn't peeling well!",
-            "What's orange and sounds like a parrot? A carrot!",
-            "Why did the cookie go to the doctor? Because it felt crumbly!",
-            "What do you call a cow with no legs? Ground beef!",
-            "Why don't scientists trust stairs? Because they're always up to something!",
-            "What do you call a fish wearing a crown? A king fish!",
-            "Why did the tomato turn red? Because it saw the salad dressing!",
-            "What do you get when you cross a snowman with a vampire? Frostbite!",
-            "Why did the computer go to the doctor? Because it had a virus!",
-            "What do you call a belt made of watches? A waist of time!",
-            "Why don't oysters share? Because they're shellfish!",
-            "What do you call a dog magician? A labracadabrador!",
-            "Why did the golfer bring two pairs of pants? In case he got a hole in one!",
-            "What do you call a group of disorganized cats? A cat-astrophe!",
-            "Why don't elephants use computers? They're afraid of the mouse!",
-            "What do you call a pig that does karate? A pork chop!",
-            "Why did the teacher wear sunglasses? Because her students were so bright!",
-            "What do you call a lazy kangaroo? A pouch potato!",
-            "Why don't melons get married? Because they cantaloupe!",
-            "What do you call a deer with no eyes? No idea!",
-            "Why did the smartphone go to therapy? It had too many hang-ups!",
-            "What do you call a factory that makes good products? A satisfactory!",
-            "Why don't ghosts like rain? It dampens their spirits!",
-            "What do you call a dinosaur with extensive vocabulary? A thesaurus!",
-            "Why did the picture go to jail? Because it was framed!",
-            "What do you call a cat that likes to bowl? An alley cat!",
-            "Why don't mountains ever get cold? They wear snow caps!",
-            "What do you call a shoe made of a banana? A slipper!",
-            "Why did the robot go on a diet? He had a byte problem!",
-            "What do you call a cow in an earthquake? A milkshake!",
-            "Why don't books ever get cold? They have book jackets!",
-            "What do you call a hippo at the North Pole? Lost!",
-            "Why did the invisible man turn down the job offer? He couldn't see himself doing it!",
-            "What do you call a pile of cats? A meowtain!",
-            "Why don't calendars ever get lonely? They have dates!",
-            "What do you call a duck that gets all A's? A wise quacker!",
-            "Why did the stadium get hot after the game? All the fans left!",
-            "What do you call a fish with two knees? A two-knee fish!",
-            "Why don't clocks ever go hungry? They go back four seconds!",
-            "What do you call a sleeping dinosaur? A dino-snore!",
-            "Why did the teddy bear refuse dessert? She was stuffed!",
-            "What do you call a unicorn with no horn? A horse!",
-            "Why don't vampires go to barbecues? They don't like steak!",
-            "What do you call a rabbit that's good at martial arts? A kung-fu bunny!",
-            "Why did the cookie cry? Because its mother was a wafer so long!",
-            "What do you call a snake that works for the government? A civil serpent!",
-            "Why don't pizza slices ever get lonely? They come in groups of eight!",
-            "What do you call a dinosaur that loves to sleep? A dino-snore!",
-            "Why did the chicken cross the playground? To get to the other slide!",
-            "What do you call a bear in the rain? A drizzly bear!",
-            "Why don't robots ever panic? They have nerves of steel!",
-            "What do you call a fish that needs help with vocals? Auto-tuna!",
-            "Why did the lamp go to school? To get brighter!",
-            "What do you call a dog that can do magic? A labracadabrador!",
-            "Why don't mummies take vacations? They're afraid they'll relax and unwind!",
-            "What do you call a fish wearing a bowtie? Sofishticated!",
-            "Why did the broom get promoted? It was outstanding in its field!",
-            "What do you call a dinosaur that crashes his car? Tyrannosaurus Wrecks!",
-            "Why don't eggs ever win at poker? They always fold!",
-            "What do you call a cow that plays the guitar? A moo-sician!",
-            "Why did the grape stop in the middle of the road? Because it ran out of juice!",
-            "What do you call a fake stone? A shamrock!",
-            "Why don't fish pay taxes? Because they live below the sea level!",
-            "What do you call a bee that can't make up its mind? A maybe!",
-            "Why did the computer keep freezing? It left its Windows open!",
-            "What do you call a pig that knows karate? A pork chop!",
-            "Why don't books ever get tired? They have plenty of shelf life!",
-            "What do you call a cow with a twitch? Beef jerky!",
-            "Why did the pencil go to therapy? It had a point to make!",
-            "What do you call a fish that wears a crown? Your Royal High-ness!",
-            "Why don't clouds ever get speeding tickets? They're always floating!",
-            "What do you call a dinosaur with a great vocabulary? A thesaurus!",
-            "Why did the cookie go to the gym? To get ripped!",
-            "What do you call a cat that gets what it wants? Purr-suasive!",
-            "Why don't trees ever get stressed? They know how to branch out!",
-            "What do you call a duck that gets all A's? A wise quacker!",
-            "Why did the music teacher go to jail? For fingering A minor!",
-            "What do you call a fish with a Ph.D? A brain sturgeon!",
-            "Why don't shoes ever get lonely? They come in pairs!",
-            "What do you call a cow that won't give milk? A milk dud!",
-            "Why did the smartphone break up with the charger? It felt drained!",
-            "What do you call a sleeping bull? A bulldozer!",
-            "Why don't ghosts make good comedians? Their jokes are too dead-pan!"
-        ];
-        
-        // Get random joke
-        const randomJoke = jokes[Math.floor(Math.random() * jokes.length)];
-        
-        // Create joke message
-        const jokeMessage = {
-            username: "😂 Joke Bot",
-            text: `🎭 ${randomJoke}`,
-            timestamp: timestamp
-        };
-        
-        // Store message (keep only last 20)
-        messages.push(jokeMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log('Joke command used');
-        
-        // Broadcast joke to all users
-        io.emit('message', jokeMessage);
+    // Allow viewing the board without joining
+    socket.on('requestBoard', () => {
+        socket.emit('fullBoard', gameBoard);
     });
 
-    // Handle flip command
-    socket.on('flip', () => {
-        const timestamp = new Date().toLocaleString();
-        
-        // Coin flip results
-        const results = ['Heads', 'Tails'];
-        const randomResult = results[Math.floor(Math.random() * results.length)];
-        
-        // Create flip message
-        const flipMessage = {
-            username: "🪙 Coin Flip",
-            text: `🎲 *flips coin* \n\n**${randomResult}!**`,
-            timestamp: timestamp
-        };
-        
-        // Store message (keep only last 20)
-        messages.push(flipMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log(`Coin flip result: ${randomResult}`);
-        
-        // Broadcast flip result to all users
-        io.emit('message', flipMessage);
+    // Allow requesting current scores without joining
+    socket.on('requestScores', () => {
+        updateScores();
     });
 
-    // Handle roll command
-    socket.on('roll', (data) => {
-        const { number } = data;
-        const timestamp = new Date().toLocaleString();
-        
-        // Parse the number or default to 6
-        const maxNumber = parseInt(number) || 6;
-        const validMax = Math.min(Math.max(maxNumber, 2), 1000); // Between 2 and 1000
-        
-        const result = Math.floor(Math.random() * validMax) + 1;
-        
-        const rollMessage = {
-            username: "🎲 Dice Roll",
-            text: `🎯 *rolls a ${validMax}-sided die* \n\n**${result}!**`,
-            timestamp: timestamp
-        };
-        
-        messages.push(rollMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log(`Dice roll (1-${validMax}): ${result}`);
-        io.emit('message', rollMessage);
-    });
+    socket.on('paint', (data) => {
+        const { x, y, color } = data;
+        const player = players.get(socket.id);
+        if (!player) return;
 
-    // Handle quote command
-    socket.on('quote', () => {
-        const timestamp = new Date().toLocaleString();
+        const previousOwner = pixelOwners[y][x];
+        const currentPixelColor = gameBoard[y][x];
         
-        const quotes = [
-            "The only way to do great work is to love what you do. - Steve Jobs",
-            "Innovation distinguishes between a leader and a follower. - Steve Jobs",
-            "Life is what happens to you while you're busy making other plans. - John Lennon",
-            "The future belongs to those who believe in the beauty of their dreams. - Eleanor Roosevelt",
-            "It is during our darkest moments that we must focus to see the light. - Aristotle",
-            "The way to get started is to quit talking and begin doing. - Walt Disney",
-            "Don't let yesterday take up too much of today. - Will Rogers",
-            "You learn more from failure than from success. Don't let it stop you. - Unknown",
-            "If you are working on something that you really care about, you don't have to be pushed. - Steve Jobs",
-            "Experience is a hard teacher because she gives the test first, the lesson afterwards. - Vernon Law",
-            "To live is the rarest thing in the world. Most people just exist. - Oscar Wilde",
-            "Success is not final, failure is not fatal: it is the courage to continue that counts. - Winston Churchill",
-            "The only impossible journey is the one you never begin. - Tony Robbins",
-            "In the midst of winter, I found there was, within me, an invincible summer. - Albert Camus",
-            "Be yourself; everyone else is already taken. - Oscar Wilde",
-            "Two things are infinite: the universe and human stupidity; I'm not sure about the universe. - Albert Einstein",
-            "Be the change you wish to see in the world. - Mahatma Gandhi",
-            "A room without books is like a body without a soul. - Marcus Tullius Cicero",
-            "You only live once, but if you do it right, once is enough. - Mae West",
-            "Insanity is doing the same thing over and over again and expecting different results. - Albert Einstein"
-        ];
+        // Update the pixel
+        gameBoard[y][x] = color;
+        pixelOwners[y][x] = player.name;
         
-        const randomQuote = quotes[Math.floor(Math.random() * quotes.length)];
+        // Handle scoring based on pixel ownership and whether it's an eraser action
+        const isEraserAction = color === '#ffffff';
         
-        const quoteMessage = {
-            username: "💭 Quote Bot",
-            text: `✨ ${randomQuote}`,
-            timestamp: timestamp
-        };
-        
-        messages.push(quoteMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log('Quote command used');
-        io.emit('message', quoteMessage);
-    });
-
-    // Handle time command
-    socket.on('time', () => {
-        const timestamp = new Date().toLocaleString();
-        
-        const now = new Date();
-        const timeZones = [
-            { name: 'UTC', time: now.toISOString().slice(11, 19) + ' UTC' },
-            { name: 'New York', time: now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: true }) + ' EST/EDT' },
-            { name: 'Los Angeles', time: now.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour12: true }) + ' PST/PDT' },
-            { name: 'London', time: now.toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour12: false }) + ' GMT/BST' },
-            { name: 'Tokyo', time: now.toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false }) + ' JST' }
-        ];
-        
-        const timeText = timeZones.map(tz => `**${tz.name}:** ${tz.time}`).join('\n');
-        
-        const timeMessage = {
-            username: "🕐 World Clock",
-            text: `🌍 **Current Time Around the World:**\n\n${timeText}`,
-            timestamp: timestamp
-        };
-        
-        messages.push(timeMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log('Time command used');
-        io.emit('message', timeMessage);
-    });
-
-    // Handle weather command
-    socket.on('weather', (data) => {
-        const { city } = data;
-        const timestamp = new Date().toLocaleString();
-        
-        // Simulated weather data
-        const weatherConditions = [
-            'Sunny ☀️', 'Partly Cloudy ⛅', 'Cloudy ☁️', 'Rainy 🌧️', 
-            'Stormy ⛈️', 'Snowy ❄️', 'Foggy 🌫️', 'Windy 💨'
-        ];
-        
-        const condition = weatherConditions[Math.floor(Math.random() * weatherConditions.length)];
-        const temp = Math.floor(Math.random() * 40) + 5; // 5-45°C
-        const humidity = Math.floor(Math.random() * 60) + 30; // 30-90%
-        
-        const cityName = city || 'Unknown Location';
-        
-        const weatherMessage = {
-            username: "🌤️ Weather Bot",
-            text: `🏙️ **Weather in ${cityName}:**\n\n🌡️ **Temperature:** ${temp}°C\n🌈 **Condition:** ${condition}\n💧 **Humidity:** ${humidity}%\n\n*Note: This is simulated weather data*`,
-            timestamp: timestamp
-        };
-        
-        messages.push(weatherMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log(`Weather command used for: ${cityName}`);
-        io.emit('message', weatherMessage);
-    });
-
-    // Handle trivia command
-    socket.on('trivia', () => {
-        const timestamp = new Date().toLocaleString();
-        
-        const triviaQuestions = [
-            { q: "What is the capital of Australia?", a: "Canberra" },
-            { q: "How many hearts does an octopus have?", a: "Three" },
-            { q: "What year was the first iPhone released?", a: "2007" },
-            { q: "What is the largest planet in our solar system?", a: "Jupiter" },
-            { q: "Who painted the Mona Lisa?", a: "Leonardo da Vinci" },
-            { q: "What is the chemical symbol for gold?", a: "Au" },
-            { q: "How many bones are in the human body?", a: "206" },
-            { q: "What is the fastest land animal?", a: "Cheetah" },
-            { q: "In which year did World War II end?", a: "1945" },
-            { q: "What is the smallest country in the world?", a: "Vatican City" },
-            { q: "How many strings does a standard guitar have?", a: "Six" },
-            { q: "What is the largest ocean on Earth?", a: "Pacific Ocean" },
-            { q: "Who wrote 'Romeo and Juliet'?", a: "William Shakespeare" },
-            { q: "What is the hardest natural substance?", a: "Diamond" },
-            { q: "How many minutes are in a full week?", a: "10,080" },
-            { q: "What language is spoken in Brazil?", a: "Portuguese" },
-            { q: "How many sides does a hexagon have?", a: "Six" },
-            { q: "What is the currency of Japan?", a: "Yen" },
-            { q: "Which planet is known as the Red Planet?", a: "Mars" },
-            { q: "What does 'WWW' stand for?", a: "World Wide Web" }
-        ];
-        
-        const randomTrivia = triviaQuestions[Math.floor(Math.random() * triviaQuestions.length)];
-        
-        const triviaMessage = {
-            username: "🧠 Trivia Bot",
-            text: `❓ **Trivia Question:**\n\n${randomTrivia.q}\n\n💡 **Answer:** ||${randomTrivia.a}|| (hover to reveal)`,
-            timestamp: timestamp
-        };
-        
-        messages.push(triviaMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log('Trivia command used');
-        io.emit('message', triviaMessage);
-    });
-
-    // Handle countdown command
-    socket.on('countdown', (data) => {
-        const { seconds } = data;
-        const timestamp = new Date().toLocaleString();
-        
-        const countdownSeconds = Math.min(Math.max(parseInt(seconds) || 10, 1), 300); // 1-300 seconds
-        
-        const countdownMessage = {
-            username: "⏰ Countdown Timer",
-            text: `🚀 **Countdown Started:** ${countdownSeconds} seconds\n\n⏳ Timer is running...`,
-            timestamp: timestamp
-        };
-        
-        messages.push(countdownMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
-        }
-        
-        console.log(`Countdown started: ${countdownSeconds} seconds`);
-        io.emit('message', countdownMessage);
-        
-        // Send countdown completion message after specified time
-        setTimeout(() => {
-            const completeMessage = {
-                username: "⏰ Countdown Timer",
-                text: `🎉 **Time's Up!** The ${countdownSeconds}-second countdown has finished!`,
-                timestamp: new Date().toLocaleString()
-            };
-            
-            messages.push(completeMessage);
-            if (messages.length > maxMessages) {
-                messages.shift();
+        if (isEraserAction) {
+            // Eraser logic: only deduct points if the pixel was the user's own color
+            if (previousOwner === player.name && currentPixelColor !== '#ffffff' && currentPixelColor !== '') {
+                // User is erasing their own colored pixel - deduct 1 point
+                updateScore(player.name, -1);
+                console.log(`🧽 Eraser: ${player.name} lost 1 point for erasing own pixel`);
             }
+            // No points gained or lost for erasing empty pixels or others' pixels
             
-            io.emit('message', completeMessage);
-        }, countdownSeconds * 1000);
+            // For eraser, don't assign ownership - set pixel owner to empty
+            pixelOwners[y][x] = '';
+        } else {
+            // Normal paint logic
+            if (!previousOwner || previousOwner === '') {
+                // New pixel - player gains 1 point
+                updateScore(player.name, 1);
+            } else if (previousOwner !== player.name) {
+                // Taking over someone else's pixel - they lose 1, you gain 1
+                updateScore(previousOwner, -1);
+                updateScore(player.name, 1);
+            }
+            // If painting over your own pixel, no score change
+        }
+        
+        io.emit('boardUpdate', { x, y, color, playerName: player.name });
     });
 
-    // Handle random command
-    socket.on('random', (data) => {
-        const { min, max } = data;
-        const timestamp = new Date().toLocaleString();
+    // Handle cursor movement
+    socket.on('cursorMove', (data) => {
+        const player = players.get(socket.id);
+        if (!player) return;
         
-        const minNum = parseInt(min) || 1;
-        const maxNum = parseInt(max) || 100;
-        
-        // Ensure min is less than or equal to max
-        const actualMin = Math.min(minNum, maxNum);
-        const actualMax = Math.max(minNum, maxNum);
-        
-        const randomNumber = Math.floor(Math.random() * (actualMax - actualMin + 1)) + actualMin;
-        
-        const randomMessage = {
-            username: "🎯 Random Number",
-            text: `🔢 **Random number between ${actualMin} and ${actualMax}:**\n\n**${randomNumber}**`,
-            timestamp: timestamp
+        // Broadcast cursor position to all other players
+        socket.broadcast.emit('cursorUpdate', {
+            x: data.x,
+            y: data.y,
+            gridX: data.gridX,
+            gridY: data.gridY,
+            playerName: player.name,
+            color: player.color
+        });
+    });
+
+
+
+    socket.on('clearMyPixels', (data) => {
+        const { name } = data;
+        for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                if (pixelOwners[y][x] === name) {
+                    gameBoard[y][x] = '';
+                    pixelOwners[y][x] = '';
+                    io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: name });
+                }
+            }
+        }
+        updateScores();
+    });
+
+    // Clear entire canvas (admin/general clear)
+    socket.on('clearCanvas', () => {
+        for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                gameBoard[y][x] = '';
+                pixelOwners[y][x] = ''; // Also clear pixel ownership
+            }
+        }
+        // Send the cleared board to all clients
+        io.emit('fullBoard', gameBoard);
+        updateScores();
+    });
+
+    socket.on('submitReport', (reportData) => {
+        try {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const reportFilename = path.join(reportsDir, `report-${timestamp}.json`);
+            const canvasFilename = path.join(reportsDir, `canvas-${timestamp}.png`);
+
+            // Auto-ban for specific keywords in the reason or description
+            const banKeywords = ['explicit', 'nsfw', 'inappropriate content', 'offensive'];
+            const shouldAutoBan = banKeywords.some(keyword => 
+                reportData.description.toLowerCase().includes(keyword) || 
+                reportData.reason.toLowerCase().includes(keyword)
+            );
+
+            if (shouldAutoBan) {
+                // Find the reported player's socket
+                let reportedSocket = null;
+                let reportedPattern = null;
+                players.forEach((player, socketId) => {
+                    if (player.name === reportData.reportedPlayer) {
+                        const socket = io.sockets.sockets.get(socketId);
+                        if (socket) {
+                            reportedSocket = socket;
+                            reportedPattern = socket.userPattern;
+                        }
+                    }
+                });
+
+                if (reportedSocket && reportedPattern) {
+                    // Ban IP
+                    bans.ips.add(reportedSocket.clientIp);
+                    // Ban username
+                    bans.names.add(reportedPattern.name.toLowerCase());
+                    // Store pattern
+                    bans.patterns.set(reportedPattern.name.toLowerCase(), {
+                        name: reportedPattern.name,
+                        color: reportedPattern.color,
+                        banTime: Date.now()
+                    });
+
+                    // Save bans to file
+                    saveBans();
+
+                    // Disconnect the banned user
+                    reportedSocket.emit('banned', { reason: 'You have been banned for inappropriate behavior.' });
+                    reportedSocket.disconnect();
+                }
+            }
+
+            // Save the canvas image
+            const base64Data = reportData.canvas.replace(/^data:image\/png;base64,/, '');
+            fs.writeFileSync(canvasFilename, base64Data, 'base64');
+
+            // Save the report data with additional information
+            const reportInfo = {
+                ...reportData,
+                canvas: `canvas-${timestamp}.png`,
+                serverTimestamp: timestamp,
+                gameState: {
+                    totalPlayers: players.size,
+                    reportedPlayerPresent: Array.from(players.values()).some(p => p.name === reportData.reportedPlayer)
+                }
+            };
+            fs.writeFileSync(reportFilename, JSON.stringify(reportInfo, null, 2));
+            
+            console.log(`Report saved: ${reportFilename}`);
+            socket.emit('reportConfirmed', { success: true, message: 'Report submitted successfully' });
+        } catch (error) {
+            console.error('Error saving report:', error);
+            socket.emit('reportConfirmed', { success: false, message: 'Failed to submit report' });
+        }
+    });
+
+    // Challenge Mode Handlers
+    socket.on('joinChallenge', () => {
+        const player = players.get(socket.id);
+        if (!player) return;
+
+        // Add player to challenge mode regardless of phase
+        challengeMode.players.set(socket.id, {
+            name: player.name,
+            color: player.color,
+            canvas: Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('')),
+            submitted: false,
+            waiting: challengeMode.active && challengeMode.phase !== 'waiting' // Mark as waiting if round is active
+        });
+
+        // Send appropriate response based on current phase
+        if (challengeMode.active && challengeMode.phase !== 'waiting') {
+            // Player joins during active round - put them in waiting state
+            socket.emit('challengeWaiting', { 
+                phase: challengeMode.phase,
+                playerCount: Array.from(challengeMode.players.values()).filter(p => !p.waiting).length,
+                timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+            });
+        } else {
+            // Normal join
+            socket.emit('challengeJoined', { 
+                phase: challengeMode.phase,
+                word: challengeMode.phase === 'drawing' ? challengeMode.currentWord : null,
+                timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+            });
+        }
+
+        // Start challenge if we have 2+ players and not already active
+        if (challengeMode.players.size >= 2 && !challengeMode.active) {
+            startChallenge();
+        }
+
+        // Send updated challenge lobby
+        broadcastChallengeLobby();
+    });
+
+    socket.on('requestChallengeStatus', () => {
+        // Send current challenge status to requesting player (even if they're not in challenge mode)
+        const lobbyData = {
+            playerCount: challengeMode.players.size,
+            phase: challengeMode.phase,
+            active: challengeMode.active,
+            players: Array.from(challengeMode.players.values()).map(p => ({
+                name: p.name,
+                color: p.color,
+                submitted: p.submitted
+            }))
         };
+
+        if (challengeMode.phase === 'drawing') {
+            lobbyData.word = challengeMode.currentWord;
+            lobbyData.timeLeft = getRemainingTime();
+        }
+
+        socket.emit('challengeLobbyUpdate', lobbyData);
+    });
+
+    socket.on('leaveChallenge', () => {
+        challengeMode.players.delete(socket.id);
         
-        messages.push(randomMessage);
-        if (messages.length > maxMessages) {
-            messages.shift();
+        // If we drop below 2 players during voting or results, end the challenge
+        if (challengeMode.players.size < 2 && challengeMode.active && 
+            (challengeMode.phase === 'voting' || challengeMode.phase === 'results')) {
+            endChallenge();
         }
         
-        console.log(`Random number generated: ${randomNumber} (${actualMin}-${actualMax})`);
-        io.emit('message', randomMessage);
+        broadcastChallengeLobby();
     });
 
-    // Handle clear messages
-    socket.on('clear messages', () => {
-        messages.length = 0; // Clear all messages
-        io.emit('clear messages'); // Notify all clients
+    socket.on('challengePaint', (data) => {
+        if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'drawing') return;
+        
+        const { x, y, color } = data;
+        const challengePlayer = challengeMode.players.get(socket.id);
+        
+        // Update player's personal canvas
+        challengePlayer.canvas[y][x] = color;
+        
+        // Send update to that player only
+        socket.emit('challengeCanvasUpdate', { x, y, color });
     });
 
-    // Handle user leaving
-    socket.on('leave', (data) => {
-        const { username } = data;
-        if (onlineUsers[username]) {
-            delete onlineUsers[username];
-            io.emit('user left', username);
+    socket.on('submitChallengeDrawing', () => {
+        if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'drawing') return;
+        
+        const challengePlayer = challengeMode.players.get(socket.id);
+        challengePlayer.submitted = true;
+        challengeMode.submissions.set(socket.id, challengePlayer.canvas);
+        
+        socket.emit('drawingSubmitted');
+        
+        // Check if all players have submitted
+        const allSubmitted = Array.from(challengeMode.players.values()).every(p => p.submitted);
+        if (allSubmitted) {
+            startVoting();
         }
     });
 
-    // Handle disconnect
+    socket.on('voteChallenge', (data) => {
+        if (!challengeMode.players.has(socket.id) || challengeMode.phase !== 'voting') return;
+        
+        const { rating } = data;
+        const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
+        
+        // Don't allow voting for yourself
+        if (currentPlayerId === socket.id) return;
+        
+        // Store vote for current submission
+        challengeMode.currentSubmissionVotes.set(socket.id, rating);
+        
+        // Notify player that vote was received
+        socket.emit('voteReceived');
+        
+        // Check if all eligible players have voted on current submission
+        const eligibleVoters = Array.from(challengeMode.players.keys()).filter(id => id !== currentPlayerId);
+        const allVoted = eligibleVoters.every(voterId => challengeMode.currentSubmissionVotes.has(voterId));
+        
+        if (allVoted) {
+            // All players voted, move to next submission immediately
+            if (challengeMode.timer) {
+                clearTimeout(challengeMode.timer);
+                challengeMode.timer = null;
+            }
+            finishVotingOnCurrentSubmission();
+        }
+    });
+
+    // Guess Mode Handlers
+    socket.on('joinGuess', () => {
+        const player = players.get(socket.id);
+        if (!player) return;
+
+        // Add player to guess mode
+        guessMode.players.set(socket.id, {
+            name: player.name,
+            color: player.color,
+            isDrawer: false,
+            hasGuessed: false,
+            guessTime: null
+        });
+
+        // Send appropriate response based on current phase
+        if (guessMode.active && guessMode.phase !== 'waiting') {
+            // Player joins during active round - put them in waiting state
+            socket.emit('guessWaiting', { 
+                phase: guessMode.phase,
+                drawerName: guessMode.currentDrawer ? guessMode.players.get(guessMode.currentDrawer)?.name : null,
+                playerCount: guessMode.players.size - 1, // Exclude current drawer
+                timeLeft: guessMode.phase === 'drawing' ? getGuessRemainingTime() : null
+            });
+        } else {
+            // Normal join
+            socket.emit('guessJoined', { 
+                phase: guessMode.phase
+            });
+        }
+
+        // Start guess game if we have 2+ players and not already active
+        if (guessMode.players.size >= 2 && !guessMode.active) {
+            startGuessGame();
+        }
+
+        // Send updated guess lobby
+        broadcastGuessLobby();
+    });
+
+    socket.on('requestGuessStatus', () => {
+        // Send current guess status to requesting player
+        const lobbyData = {
+            playerCount: guessMode.players.size,
+            phase: guessMode.phase,
+            active: guessMode.active,
+            players: Array.from(guessMode.players.values()).map(p => ({
+                name: p.name,
+                color: p.color,
+                isDrawer: p.isDrawer,
+                hasGuessed: p.hasGuessed
+            }))
+        };
+
+        if (guessMode.phase === 'drawing' && guessMode.currentDrawer) {
+            const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+            lobbyData.drawerName = drawerPlayer?.name;
+            lobbyData.timeLeft = getGuessRemainingTime();
+        }
+
+        socket.emit('guessLobbyUpdate', lobbyData);
+    });
+
+    socket.on('leaveGuess', () => {
+        const wasDrawer = guessMode.players.get(socket.id)?.isDrawer;
+        guessMode.players.delete(socket.id);
+        
+        // If the drawer left, end the current round
+        if (wasDrawer && guessMode.active) {
+            endCurrentGuessRound();
+        }
+        
+        // If we drop below 2 players, end the game
+        if (guessMode.players.size < 2 && guessMode.active) {
+            endGuessGame();
+        }
+        
+        broadcastGuessLobby();
+    });
+
+    socket.on('guessPaint', (data) => {
+        if (!guessMode.players.has(socket.id) || guessMode.phase !== 'drawing') return;
+        
+        const guessPlayer = guessMode.players.get(socket.id);
+        if (!guessPlayer.isDrawer) return; // Only drawer can paint
+        
+        const { x, y, color } = data;
+        
+        // Update shared canvas
+        guessMode.canvas[y][x] = color;
+        
+        // Send update to all players in guess mode
+        io.to(Array.from(guessMode.players.keys())).emit('guessCanvasUpdate', { x, y, color });
+    });
+
+    socket.on('submitGuess', (data) => {
+        if (!guessMode.players.has(socket.id) || guessMode.phase !== 'drawing') return;
+        
+        const guessPlayer = guessMode.players.get(socket.id);
+        if (guessPlayer.isDrawer || guessPlayer.hasGuessed) return; // Drawer can't guess, and can't guess twice
+        
+        const { guess } = data;
+        const isCorrect = guess.toLowerCase().trim() === guessMode.currentWord.toLowerCase();
+        
+        if (isCorrect) {
+            // Mark player as having guessed correctly
+            guessPlayer.hasGuessed = true;
+            guessPlayer.guessTime = Date.now() - guessMode.drawingStartTime;
+            
+            // Add to correct guessers list
+            guessMode.correctGuessers.push({
+                playerId: socket.id,
+                playerName: guessPlayer.name,
+                guessTime: guessPlayer.guessTime
+            });
+            
+            // Notify all players
+            io.to(Array.from(guessMode.players.keys())).emit('guessSubmitted', {
+                playerName: guessPlayer.name,
+                guess: guess,
+                isCorrect: true
+            });
+            
+            // Check if all non-drawer players have guessed correctly
+            const nonDrawerPlayers = Array.from(guessMode.players.values()).filter(p => !p.isDrawer);
+            const allGuessed = nonDrawerPlayers.every(p => p.hasGuessed);
+            
+            if (allGuessed) {
+                // All players guessed correctly, end round early
+                endCurrentGuessRound();
+            }
+        } else {
+            // Wrong guess
+            io.to(Array.from(guessMode.players.keys())).emit('guessSubmitted', {
+                playerName: guessPlayer.name,
+                guess: guess,
+                isCorrect: false
+            });
+        }
+    });
+
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-        
-        // Find and remove user from online users
-        for (const [username, id] of Object.entries(onlineUsers)) {
-            if (id === socket.id) {
-                delete onlineUsers[username];
-                io.emit('user left', username);
-                break;
+        const player = players.get(socket.id);
+        if (player) {
+            // Notify other players that this player disconnected (for cursor cleanup)
+            socket.broadcast.emit('playerDisconnected', { playerName: player.name });
+            
+            // Notify all players that someone left
+            io.emit('playerLeft', { playerName: player.name });
+            
+            // Clear all pixels drawn by this player
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    if (pixelOwners[y][x] === player.name) {
+                        gameBoard[y][x] = '';
+                        pixelOwners[y][x] = '';
+                        // Notify all clients about the cleared pixel
+                        io.emit('boardUpdate', { x, y, color: '#ffffff', playerName: 'system' });
+                    }
+                }
             }
+            
+            players.delete(socket.id);
+            scores.delete(player.name);
+            updateScores();
+            io.emit('playerListUpdate', Array.from(players.values()));
+            
+            console.log(`User ${player.name} disconnected - their drawings have been cleared`);
+        }
+
+        // Handle challenge mode disconnect
+        if (challengeMode.players.has(socket.id)) {
+            challengeMode.players.delete(socket.id);
+            challengeMode.votes.delete(socket.id);
+            challengeMode.submissions.delete(socket.id);
+            
+            // End challenge if too few players
+            if (challengeMode.players.size < 2 && challengeMode.active) {
+                endChallenge();
+            }
+            
+            broadcastChallengeLobby();
+        }
+
+        // Handle guess mode disconnect
+        if (guessMode.players.has(socket.id)) {
+            const wasDrawer = guessMode.players.get(socket.id)?.isDrawer;
+            guessMode.players.delete(socket.id);
+            
+            // If the drawer left, end the current round
+            if (wasDrawer && guessMode.active) {
+                endCurrentGuessRound();
+            }
+            
+            // End guess game if too few players
+            if (guessMode.players.size < 2 && guessMode.active) {
+                endGuessGame();
+            }
+            
+            broadcastGuessLobby();
         }
     });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Health check available at: http://localhost:${PORT}/health`);
-}).on('error', (err) => {
-    console.error('Server error:', err);
-    process.exit(1);
-});
+// Challenge Mode Helper Functions
+function startChallenge() {
+    challengeMode.active = true;
+    challengeMode.phase = 'drawing';
+    challengeMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
+    challengeMode.startTime = Date.now();
+    challengeMode.submissions.clear();
+    challengeMode.votes.clear();
+    challengeMode.results = [];
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
-    process.exit(1);
-});
+    // Reset all player submission status and move waiting players into the round
+    for (let player of challengeMode.players.values()) {
+        player.submitted = false;
+        player.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+        player.waiting = false; // Move waiting players into the active round
+    }
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
+    // Start drawing timer
+    challengeMode.timer = setTimeout(() => {
+        startVoting();
+    }, challengeMode.duration);
+
+    // Notify all challenge players
+    io.to(Array.from(challengeMode.players.keys())).emit('challengeStarted', {
+        word: challengeMode.currentWord,
+        duration: challengeMode.duration
+    });
+
+    broadcastChallengeLobby();
+}
+
+function startVoting() {
+    if (challengeMode.timer) {
+        clearTimeout(challengeMode.timer);
+        challengeMode.timer = null;
+    }
+
+    challengeMode.phase = 'voting';
+    challengeMode.votes.clear();
+    challengeMode.currentSubmissionVotes.clear();
+    challengeMode.currentVotingIndex = 0;
+
+    // Prepare voting order (shuffle submissions for fairness)
+    challengeMode.votingOrder = Array.from(challengeMode.submissions.keys());
+    // Shuffle the array
+    for (let i = challengeMode.votingOrder.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [challengeMode.votingOrder[i], challengeMode.votingOrder[j]] = [challengeMode.votingOrder[j], challengeMode.votingOrder[i]];
+    }
+
+    if (challengeMode.votingOrder.length === 0) {
+        // No submissions, skip to results
+        showResults();
+        return;
+    }
+
+    // Start voting on first submission
+    startVotingOnCurrentSubmission();
+}
+
+function startVotingOnCurrentSubmission() {
+    if (challengeMode.currentVotingIndex >= challengeMode.votingOrder.length) {
+        // All submissions voted on, show results
+        showResults();
+        return;
+    }
+
+    challengeMode.currentSubmissionVotes.clear();
+    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
+    const currentPlayer = challengeMode.players.get(currentPlayerId);
+    const currentSubmission = challengeMode.submissions.get(currentPlayerId);
+
+    if (!currentPlayer || !currentSubmission) {
+        // Skip to next submission if data is missing
+        challengeMode.currentVotingIndex++;
+        startVotingOnCurrentSubmission();
+        return;
+    }
+
+    // Notify all players about current submission to vote on
+    for (let playerId of challengeMode.players.keys()) {
+        const isOwnSubmission = playerId === currentPlayerId;
+        io.to(playerId).emit('votingOnSubmission', {
+            word: challengeMode.currentWord,
+            submission: {
+                playerId: currentPlayerId,
+                playerName: currentPlayer.name,
+                canvas: currentSubmission
+            },
+            isOwnSubmission: isOwnSubmission,
+            currentIndex: challengeMode.currentVotingIndex + 1,
+            totalSubmissions: challengeMode.votingOrder.length,
+            timeLeft: challengeMode.votingTimer
+        });
+    }
+
+    // Start timer for this submission
+    challengeMode.timer = setTimeout(() => {
+        finishVotingOnCurrentSubmission();
+    }, challengeMode.votingTimer);
+
+    broadcastChallengeLobby();
+}
+
+function finishVotingOnCurrentSubmission() {
+    // Store votes for current submission
+    const currentPlayerId = challengeMode.votingOrder[challengeMode.currentVotingIndex];
+    
+    // Calculate average rating for current submission
+    let totalRating = 0;
+    let voteCount = 0;
+    
+    for (let [voterId, rating] of challengeMode.currentSubmissionVotes) {
+        totalRating += rating;
+        voteCount++;
+        // Also store in main votes map for final results
+        challengeMode.votes.set(`${voterId}-${currentPlayerId}`, { targetId: currentPlayerId, rating });
+    }
+
+    // Move to next submission
+    challengeMode.currentVotingIndex++;
+    
+    // Small delay before next submission
+    setTimeout(() => {
+        startVotingOnCurrentSubmission();
+    }, 1000);
+}
+
+function showResults() {
+    if (challengeMode.timer) {
+        clearTimeout(challengeMode.timer);
+        challengeMode.timer = null;
+    }
+
+    challengeMode.phase = 'results';
+
+    // Calculate results
+    const playerScores = new Map();
+    
+    // Initialize scores for all players
+    for (let playerId of challengeMode.players.keys()) {
+        playerScores.set(playerId, { totalRating: 0, voteCount: 0, averageRating: 0 });
+    }
+
+    // Calculate average ratings
+    for (let vote of challengeMode.votes.values()) {
+        const targetScore = playerScores.get(vote.targetId);
+        if (targetScore) {
+            targetScore.totalRating += vote.rating;
+            targetScore.voteCount++;
+        }
+    }
+
+    // Calculate averages and create results array
+    challengeMode.results = [];
+    for (let [playerId, scoreData] of playerScores) {
+        const player = challengeMode.players.get(playerId);
+        if (player && challengeMode.submissions.has(playerId)) {
+            scoreData.averageRating = scoreData.voteCount > 0 ? scoreData.totalRating / scoreData.voteCount : 0;
+            challengeMode.results.push({
+                playerId,
+                playerName: player.name,
+                canvas: challengeMode.submissions.get(playerId),
+                averageRating: Math.round(scoreData.averageRating * 100) / 100,
+                voteCount: scoreData.voteCount
+            });
+        }
+    }
+
+    // Sort by average rating (highest first)
+    challengeMode.results.sort((a, b) => b.averageRating - a.averageRating);
+
+    // Track challenge winner
+    if (challengeMode.results.length > 0) {
+        // Winner determined - could add future winner tracking here
+    }
+
+    // Notify all players of results
+    io.to(Array.from(challengeMode.players.keys())).emit('challengeResults', {
+        word: challengeMode.currentWord,
+        results: challengeMode.results
+    });
+
+    // Show results for 10 seconds, then restart if enough players
+    challengeMode.timer = setTimeout(() => {
+        if (challengeMode.players.size >= 2) {
+            startChallenge();
+        } else {
+            endChallenge();
+        }
+    }, 10000);
+
+    broadcastChallengeLobby();
+}
+
+function endChallenge() {
+    if (challengeMode.timer) {
+        clearTimeout(challengeMode.timer);
+        challengeMode.timer = null;
+    }
+
+    challengeMode.active = false;
+    challengeMode.phase = 'waiting';
+    challengeMode.currentWord = '';
+    challengeMode.startTime = null;
+    challengeMode.submissions.clear();
+    challengeMode.votes.clear();
+    challengeMode.results = [];
+    challengeMode.votingOrder = [];
+    challengeMode.currentVotingIndex = 0;
+    challengeMode.currentSubmissionVotes.clear();
+
+    // Notify all remaining players
+    io.to(Array.from(challengeMode.players.keys())).emit('challengeEnded');
+
+    broadcastChallengeLobby();
+}
+
+function broadcastChallengeLobby() {
+    const activePlayers = Array.from(challengeMode.players.values()).filter(p => !p.waiting);
+    const waitingPlayers = Array.from(challengeMode.players.values()).filter(p => p.waiting);
+    
+    const lobbyData = {
+        playerCount: challengeMode.players.size,
+        activePlayerCount: activePlayers.length,
+        waitingPlayerCount: waitingPlayers.length,
+        phase: challengeMode.phase,
+        active: challengeMode.active,
+        players: activePlayers.map(p => ({
+            name: p.name,
+            color: p.color,
+            submitted: p.submitted
+        }))
+    };
+
+    if (challengeMode.phase === 'drawing') {
+        lobbyData.word = challengeMode.currentWord;
+        lobbyData.timeLeft = getRemainingTime();
+    }
+
+    // Send regular lobby update to active players
+    const activePlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
+        !challengeMode.players.get(id).waiting
+    );
+    if (activePlayerIds.length > 0) {
+        io.to(activePlayerIds).emit('challengeLobbyUpdate', lobbyData);
+    }
+
+    // Send waiting update to waiting players
+    const waitingPlayerIds = Array.from(challengeMode.players.keys()).filter(id => 
+        challengeMode.players.get(id).waiting
+    );
+    if (waitingPlayerIds.length > 0) {
+        io.to(waitingPlayerIds).emit('waitingLobbyUpdate', {
+            phase: challengeMode.phase,
+            activePlayerCount: activePlayers.length,
+            timeLeft: challengeMode.phase === 'drawing' ? getRemainingTime() : null
+        });
+    }
+}
+
+function getRemainingTime() {
+    if (!challengeMode.startTime) return 0;
+    const elapsed = Date.now() - challengeMode.startTime;
+    return Math.max(0, challengeMode.duration - elapsed);
+}
+
+function updateScore(playerName, points) {
+    const playerScore = scores.get(playerName);
+    if (playerScore) {
+        playerScore.score += points;
+        // Ensure score doesn't go below 0
+        if (playerScore.score < 0) {
+            playerScore.score = 0;
+        }
+        updateScores();
+    }
+}
+
+function updateScores() {
+    const scoreArray = Array.from(scores.entries()).map(([name, data]) => ({
+        name,
+        score: data.score,
+        color: data.color
+    })).sort((a, b) => b.score - a.score);
+    
+    io.emit('scoreUpdate', scoreArray);
+}
+
+// Guess Mode Helper Functions
+function startGuessGame() {
+    guessMode.active = true;
+    guessMode.phase = 'waiting';
+    guessMode.roundNumber = 0;
+    guessMode.playerOrder = Array.from(guessMode.players.keys());
+    guessMode.currentPlayerIndex = 0;
+    
+    // Start first round
+    startNextGuessRound();
+}
+
+function startNextGuessRound() {
+    if (guessMode.players.size < 2) {
+        endGuessGame();
+        return;
+    }
+    
+    guessMode.roundNumber++;
+    guessMode.phase = 'drawing';
+    guessMode.currentWord = challengeWords[Math.floor(Math.random() * challengeWords.length)];
+    guessMode.drawingStartTime = Date.now();
+    guessMode.correctGuessers = [];
+    
+    // Clear canvas for new round
+    guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    
+    // Reset all players
+    for (let player of guessMode.players.values()) {
+        player.isDrawer = false;
+        player.hasGuessed = false;
+        player.guessTime = null;
+    }
+    
+    // Set current drawer
+    if (guessMode.currentPlayerIndex >= guessMode.playerOrder.length) {
+        guessMode.currentPlayerIndex = 0;
+    }
+    
+    // Find next valid drawer (player still in game)
+    let attempts = 0;
+    while (attempts < guessMode.playerOrder.length) {
+        const currentPlayerId = guessMode.playerOrder[guessMode.currentPlayerIndex];
+        if (guessMode.players.has(currentPlayerId)) {
+            guessMode.currentDrawer = currentPlayerId;
+            guessMode.players.get(currentPlayerId).isDrawer = true;
+            break;
+        }
+        guessMode.currentPlayerIndex = (guessMode.currentPlayerIndex + 1) % guessMode.playerOrder.length;
+        attempts++;
+    }
+    
+    if (!guessMode.currentDrawer) {
+        endGuessGame();
+        return;
+    }
+    
+    // Start drawing timer
+    guessMode.timer = setTimeout(() => {
+        endCurrentGuessRound();
+    }, guessMode.drawingDuration);
+    
+    // Notify all players
+    const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+    for (let [playerId, player] of guessMode.players) {
+        if (player.isDrawer) {
+            // Notify drawer
+            io.to(playerId).emit('guessStarted', {
+                isDrawer: true,
+                word: guessMode.currentWord,
+                duration: guessMode.drawingDuration
+            });
+        } else {
+            // Notify guessers
+            io.to(playerId).emit('guessStarted', {
+                isDrawer: false,
+                drawerName: drawerPlayer.name,
+                duration: guessMode.drawingDuration
+            });
+        }
+    }
+    
+    broadcastGuessLobby();
+}
+
+function endCurrentGuessRound() {
+    if (guessMode.timer) {
+        clearTimeout(guessMode.timer);
+        guessMode.timer = null;
+    }
+    
+    guessMode.phase = 'results';
+    
+    // Create results data
+    const results = {
+        word: guessMode.currentWord,
+        drawerName: guessMode.players.get(guessMode.currentDrawer)?.name,
+        correctGuessers: guessMode.correctGuessers.sort((a, b) => a.guessTime - b.guessTime), // Fastest first
+        totalPlayers: guessMode.players.size - 1 // Exclude drawer
+    };
+    
+    // Notify all players of results
+    io.to(Array.from(guessMode.players.keys())).emit('guessResults', results);
+    
+    // Move to next drawer
+    guessMode.currentPlayerIndex = (guessMode.currentPlayerIndex + 1) % guessMode.playerOrder.length;
+    
+    // Auto-progress to next round after 8 seconds if 2+ players remain
+    guessMode.autoProgressTimer = setTimeout(() => {
+        if (guessMode.players.size >= 2) {
+            // Set phase to waiting to allow new players to join
+            guessMode.phase = 'waiting';
+            broadcastGuessLobby();
+            
+            // Start next round after 15 seconds to give plenty of time for new players to join
+            setTimeout(() => {
+                if (guessMode.players.size >= 2) {
+                    startNextGuessRound();
+                } else {
+                    endGuessGame();
+                }
+            }, 15000);
+        } else {
+            endGuessGame();
+        }
+    }, 8000);
+    
+    broadcastGuessLobby();
+}
+
+function endGuessGame() {
+    if (guessMode.timer) {
+        clearTimeout(guessMode.timer);
+        guessMode.timer = null;
+    }
+    
+    if (guessMode.autoProgressTimer) {
+        clearTimeout(guessMode.autoProgressTimer);
+        guessMode.autoProgressTimer = null;
+    }
+    
+    guessMode.active = false;
+    guessMode.phase = 'waiting';
+    guessMode.currentWord = '';
+    guessMode.currentDrawer = null;
+    guessMode.drawingStartTime = null;
+    guessMode.canvas = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(''));
+    guessMode.roundNumber = 0;
+    guessMode.playerOrder = [];
+    guessMode.currentPlayerIndex = 0;
+    guessMode.correctGuessers = [];
+    
+    // Notify all remaining players
+    io.to(Array.from(guessMode.players.keys())).emit('guessEnded');
+    
+    broadcastGuessLobby();
+}
+
+function broadcastGuessLobby() {
+    const lobbyData = {
+        playerCount: guessMode.players.size,
+        phase: guessMode.phase,
+        active: guessMode.active,
+        players: Array.from(guessMode.players.values()).map(p => ({
+            name: p.name,
+            color: p.color,
+            isDrawer: p.isDrawer,
+            hasGuessed: p.hasGuessed
+        }))
+    };
+    
+    if (guessMode.phase === 'drawing' && guessMode.currentDrawer) {
+        const drawerPlayer = guessMode.players.get(guessMode.currentDrawer);
+        lobbyData.drawerName = drawerPlayer?.name;
+        lobbyData.timeLeft = getGuessRemainingTime();
+        lobbyData.roundNumber = guessMode.roundNumber;
+    }
+    
+    // Send lobby update to ALL connected players (not just those in guess mode)
+    // This ensures that players viewing the guess modal but not yet joined also get updates
+    io.emit('guessLobbyUpdate', lobbyData);
+}
+
+function getGuessRemainingTime() {
+    if (!guessMode.drawingStartTime) return 0;
+    const elapsed = Date.now() - guessMode.drawingStartTime;
+    return Math.max(0, guessMode.drawingDuration - elapsed);
+}
+
+
+
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
 });

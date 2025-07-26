@@ -1,26 +1,17 @@
 {
-  "name": "micahs-chatroom",
-  "version": "1.0.0",
-  "description": "Real-time chat application",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "leo-profanity": "^1.7.0",
-    "socket.io": "^4.7.2"
-  },
-  "engines": {
-    "node": ">=16.0.0"
-  },
-  "keywords": [
-    "chat",
-    "real-time",
-    "socket.io",
-    "express"
-  ],
-  "author": "Micah",
-  "license": "MIT"
+    "name": "pixel-paint-party-backend",
+    "version": "1.0.0",
+    "description": "Backend server for multiplayer pixel painting game",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node server.js"
+    },
+    "dependencies": {
+        "express": "^4.17.1",
+        "socket.io": "^4.3.2"
+    },
+    "engines": {
+        "node": ">=14.0.0"
+    }
 }
