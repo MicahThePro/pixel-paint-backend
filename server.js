@@ -7,7 +7,7 @@ origin: [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "https://pixel-paint-party.netlify.app",
-  "https://ppp-backend.onrender.com"
+  "https://pixel-paint-backend.onrender.com",
 ],
         methods: ["GET", "POST"],
         credentials: true
