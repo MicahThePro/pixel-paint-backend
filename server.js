@@ -181,6 +181,11 @@ let guessMode = {
 
 app.use(express.static(path.join(__dirname)));
 
+// Health check endpoint for uptime monitoring
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 io.on('connection', (socket) => {
     console.log('A user connected');
     
